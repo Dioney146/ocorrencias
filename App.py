@@ -102,6 +102,7 @@ def tela_login():
                     "login": user,
                     "nome": d.get("nome", user.upper()),
                     "perfil": d.get("perfil", "registro"),
+                    "cargo": d.get("cargo", ""),
                 }
                 st.rerun()
             else:
@@ -766,7 +767,7 @@ def main():
     with st.sidebar:
         st.markdown("### 📦 Ocorrências")
         st.markdown(f"**{usuario['nome']}**")
-        st.caption(f"Perfil: {usuario['perfil']}")
+        st.caption(f"{usuario.get('cargo') or usuario['perfil'].title()}")
         st.divider()
         opcoes = ["Registrar", "Consultar", "Painel"]
         if eh_admin(usuario):
