@@ -52,12 +52,20 @@ ARQ_OCORRENCIAS = DADOS / "ocorrencias.csv"  # só no modo CSV local
 # Abas da planilha do Google Sheets
 ABA_OCORRENCIAS = "ocorrencias"
 ABA_PRODUTOS = "base produtos"
-ABA_PESSOAS = "base pessoas"
+ABA_PESSOAS = "pessoas"
 ABA_MOTIVOS = "base motivos"
 ABA_CARREGAMENTOS = "base carregamentos"
 
+# Nomes alternativos aceitos na leitura (o primeiro que existir é usado)
+ALTERNATIVAS = {
+    ABA_PRODUTOS: ["base produtos", "produtos"],
+    ABA_PESSOAS: ["pessoas", "base pessoas"],
+    ABA_MOTIVOS: ["base motivos", "motivos"],
+    ABA_CARREGAMENTOS: ["base carregamentos", "carregamentos"],
+}
+
 COLS_PRODUTOS = ["CODPROD", "DESCRICAO", "EMBALAGEMMASTER", "QTUNITCX", "CUSTO"]
-COLS_PESSOAS = ["TIPO", "NOME"]
+COLS_PESSOAS = ["CONFERENTE", "SEPARADOR", "ENTREGADOR"]
 COLS_MOTIVOS = ["MOTIVO", "SETOR"]
 COLS_CARREGAMENTOS = ["nota_fiscal", "carregamento", "placa", "entregador"]
 
@@ -179,32 +187,54 @@ def _planilha():
 
 
 def _aba(nome: str, criar=False, colunas=None):
-    """Devolve a worksheet, criando-a se pedido. None se não existir."""
+    """Devolve a worksheet pelo nome, ignorando maiúsculas/minúsculas.
+
+    Cria a aba se criar=True e ela não existir. None caso contrário.
+    """
     planilha = _planilha()
-    try:
-        return planilha.worksheet(nome)
-    except Exception:
-        if not criar:
-            return None
-        ws = planilha.add_worksheet(nome, rows=1000,
-                                    cols=max(5, len(colunas or [])))
-        if colunas:
-            ws.update(values=[colunas], range_name="A1")
-        return ws
+    alvo = nome.strip().lower()
+    for ws in planilha.worksheets():
+        if ws.title.strip().lower() == alvo:
+            return ws
+    if not criar:
+        return None
+    ws = planilha.add_worksheet(nome, rows=1000, cols=max(5, len(colunas or [])))
+    if colunas:
+        ws.update(values=[colunas], range_name="A1")
+    return ws
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def ler_aba(nome: str) -> pd.DataFrame:
-    """Lê uma aba inteira como DataFrame de strings. Vazio se não existir."""
+    """Lê uma aba como DataFrame de strings, aceitando nomes alternativos."""
     if not usando_sheets():
         return pd.DataFrame()
-    ws = _aba(nome)
+    ws = None
+    for candidata in ALTERNATIVAS.get(nome, [nome]):
+        ws = _aba(candidata)
+        if ws is not None:
+            break
     if ws is None:
         return pd.DataFrame()
     valores = ws.get_all_values()
     if len(valores) < 2:
         return pd.DataFrame()
-    return pd.DataFrame(valores[1:], columns=valores[0])
+
+    cabecalho = valores[0]
+    largura = max(len(l) for l in valores)
+    cabecalho += [""] * (largura - len(cabecalho))
+
+    # Colunas em branco (separadoras) e nomes repetidos ganham rótulo próprio,
+    # para o DataFrame não quebrar.
+    nomes, vistos = [], {}
+    for i, c in enumerate(cabecalho):
+        nome_col = str(c).strip() or f"_vazia_{i}"
+        vistos[nome_col] = vistos.get(nome_col, 0) + 1
+        nomes.append(nome_col if vistos[nome_col] == 1
+                     else f"{nome_col}_{vistos[nome_col]}")
+
+    linhas = [l + [""] * (largura - len(l)) for l in valores[1:]]
+    return pd.DataFrame(linhas, columns=nomes)
 
 
 def salvar_aba(nome: str, df: pd.DataFrame, colunas: list) -> int:
@@ -266,14 +296,35 @@ def base_motivos() -> pd.DataFrame:
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def base_pessoas() -> dict:
+    """Lê a aba de pessoas em qualquer um dos dois formatos:
+
+    A) uma coluna por tipo: CONFERENTE | SEPARADOR | ENTREGADOR
+    B) duas colunas em lista: TIPO | NOME
+    """
     df = ler_aba(ABA_PESSOAS)
-    if not df.empty and {"TIPO", "NOME"} <= set(df.columns):
-        return {
-            chave: sorted({n.strip().upper() for n in
-                           df.loc[df["TIPO"].str.upper() == tipo, "NOME"]
-                           if str(n).strip()})
-            for chave, tipo in TIPOS_PESSOA.items()
-        }
+    if not df.empty:
+        colunas = {str(c).strip().upper(): c for c in df.columns}
+
+        # Formato B: TIPO / NOME
+        if {"TIPO", "NOME"} <= set(colunas):
+            tipos = df[colunas["TIPO"]].astype(str).str.strip().str.upper()
+            return {chave: sorted({str(n).strip().upper()
+                                   for n in df.loc[tipos == tipo, colunas["NOME"]]
+                                   if str(n).strip()})
+                    for chave, tipo in TIPOS_PESSOA.items()}
+
+        # Formato A: uma coluna por tipo (colunas em branco entre elas são
+        # ignoradas, pois recebem rótulo _vazia_N na leitura)
+        resultado = {}
+        for chave, tipo in TIPOS_PESSOA.items():
+            achada = next((orig for nome, orig in colunas.items()
+                           if nome.startswith(tipo)), None)
+            resultado[chave] = sorted({str(n).strip().upper()
+                                       for n in df[achada]
+                                       if str(n).strip()}) if achada else []
+        if any(resultado.values()):
+            return resultado
+
     if ARQ_PESSOAS.exists():
         return json.loads(ARQ_PESSOAS.read_text(encoding="utf-8"))
     return {k: [] for k in TIPOS_PESSOA}
@@ -884,9 +935,10 @@ def pagina_bases(usuario: dict):
     # ------------------------------------------------------------- Pessoas
     with ab3:
         pes = base_pessoas()
-        st.caption("Edite as listas abaixo e salve — ou importe um arquivo com "
-                   "as colunas TIPO e NOME (TIPO = CONFERENTE, SEPARADOR ou "
-                   "ENTREGADOR).")
+        st.caption(f"Lendo da aba \"{ABA_PESSOAS}\" da planilha. Aceita dois "
+                   "formatos: uma coluna por tipo (CONFERENTE, SEPARADOR, "
+                   "ENTREGADOR) ou duas colunas (TIPO, NOME). Edite abaixo e "
+                   "salve, ou importe um arquivo.")
         cols = st.columns(3)
         novos = {}
         for col, chave, titulo in zip(cols, TIPOS_PESSOA,
@@ -902,11 +954,13 @@ def pagina_bases(usuario: dict):
 
         if st.button("Salvar pessoas na planilha", type="primary"):
             if _exigir_sheets():
-                linhas = [{"TIPO": TIPOS_PESSOA[k], "NOME": n}
-                          for k, lista in novos.items() for n in lista]
-                total = salvar_aba(ABA_PESSOAS, pd.DataFrame(linhas),
-                                   COLS_PESSOAS)
-                st.success(f"{total} nomes salvos na aba \"{ABA_PESSOAS}\".")
+                maior = max((len(v) for v in novos.values()), default=0)
+                tabela = pd.DataFrame({
+                    TIPOS_PESSOA[k]: novos[k] + [""] * (maior - len(novos[k]))
+                    for k in TIPOS_PESSOA})
+                total = salvar_aba(ABA_PESSOAS, tabela, COLS_PESSOAS)
+                st.success(f"Listas salvas na aba \"{ABA_PESSOAS}\" "
+                           f"({total} linhas).")
                 st.rerun()
 
         with st.expander("Importar de arquivo"):
