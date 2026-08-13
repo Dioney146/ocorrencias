@@ -29,11 +29,23 @@ import streamlit as st
 BASE_DIR = Path(__file__).parent
 DADOS = BASE_DIR / "dados"
 
-ARQ_PRODUTOS = DADOS / "produtos.csv"
-ARQ_MOTIVOS = DADOS / "motivos.csv"
-ARQ_PESSOAS = DADOS / "pessoas.json"
-ARQ_CARREGAMENTOS = DADOS / "carregamentos.csv"
-ARQ_HISTORICO = DADOS / "historico_2026.csv"
+def _localizar(nome: str) -> Path:
+    """Procura o arquivo em dados/ e, se não achar, na raiz do projeto.
+
+    Torna o app tolerante a repositórios onde os arquivos foram enviados
+    soltos, sem a pasta dados/.
+    """
+    for caminho in (DADOS / nome, BASE_DIR / nome):
+        if caminho.exists():
+            return caminho
+    return DADOS / nome  # caminho padrão, mesmo que ainda não exista
+
+
+ARQ_PRODUTOS = _localizar("produtos.csv")
+ARQ_MOTIVOS = _localizar("motivos.csv")
+ARQ_PESSOAS = _localizar("pessoas.json")
+ARQ_CARREGAMENTOS = _localizar("carregamentos.csv")
+ARQ_HISTORICO = _localizar("historico_2026.csv")
 ARQ_OCORRENCIAS = DADOS / "ocorrencias.csv"  # usado só no modo CSV local
 
 MESES_PT = {1: "JAN", 2: "FEV", 3: "MAR", 4: "ABR", 5: "MAI", 6: "JUN",
@@ -759,9 +771,43 @@ st.markdown("""<style>
 </style>""", unsafe_allow_html=True)
 
 
+def verificar_arquivos():
+    """Avisa de forma clara quando alguma base não foi enviada ao repositório."""
+    obrigatorios = {
+        "produtos.csv": ARQ_PRODUTOS,
+        "motivos.csv": ARQ_MOTIVOS,
+        "pessoas.json": ARQ_PESSOAS,
+    }
+    faltando = [n for n, c in obrigatorios.items() if not c.exists()]
+    if not faltando:
+        return True
+
+    st.error("Arquivos de base não encontrados: " + ", ".join(faltando))
+    st.markdown(
+        "Envie estes arquivos para o repositório dentro da pasta **`dados/`**, "
+        "ao lado do `app.py`. A estrutura correta é:\n\n"
+        "```\napp.py\nrequirements.txt\ndados/produtos.csv\n"
+        "dados/motivos.csv\ndados/pessoas.json\ndados/carregamentos.csv\n"
+        "dados/historico_2026.csv\n```"
+    )
+    with st.expander("O que o app está enxergando no servidor"):
+        st.write(f"Pasta do app: `{BASE_DIR}`")
+        st.write("Arquivos na raiz:")
+        st.code("\n".join(sorted(p.name for p in BASE_DIR.iterdir())) or "(vazio)")
+        st.write("Arquivos em dados/:")
+        if DADOS.exists():
+            st.code("\n".join(sorted(p.name for p in DADOS.iterdir())) or "(vazio)")
+        else:
+            st.code("a pasta dados/ não existe")
+    return False
+
+
 def main():
     usuario = tela_login()
     if not usuario:
+        st.stop()
+
+    if not verificar_arquivos():
         st.stop()
 
     with st.sidebar:
