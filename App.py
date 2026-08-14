@@ -1,21 +1,15 @@
 """
 Sistema de Ocorrências - arquivo único.
 
-Rodar local:  streamlit run app.py
-Publicar:     GitHub + share.streamlit.io
+Todas as bases vivem na planilha do Google Sheets, em abas próprias:
+    Diario     -> notas fiscais faturadas (fonte do preenchimento automático)
+    Produtos   -> cadastro de produtos (embalagem, qt/cx, custo)
+    Pessoas    -> conferentes, separadores e entregadores
+    Motivos    -> motivos e seus setores
+    ocorrencias-> registro gerado pelo sistema
 
-Estrutura do repositório:
-    app.py
-    requirements.txt
-    dados/produtos.csv           (semente inicial das bases)
-    dados/pessoas.json
-    dados/motivos.csv
-    dados/carregamentos.csv
-    dados/historico_2026.csv
-
-As bases passam a viver na planilha do Google Sheets, em abas próprias
-("base produtos", "base pessoas", "base motivos", "base carregamentos").
-Os arquivos em dados/ servem só como semente na primeira carga.
+Fluxo do registro: digita a NF -> o app busca a nota no Diario -> escolhe o
+produto da nota -> informa entregador, motivo e quantidade -> finaliza.
 """
 import hashlib
 import io
@@ -35,7 +29,6 @@ DADOS = BASE_DIR / "dados"
 
 
 def _localizar(nome: str) -> Path:
-    """Procura o arquivo em dados/ e, se não achar, na raiz do projeto."""
     for caminho in (DADOS / nome, BASE_DIR / nome):
         if caminho.exists():
             return caminho
@@ -45,29 +38,51 @@ def _localizar(nome: str) -> Path:
 ARQ_PRODUTOS = _localizar("produtos.csv")
 ARQ_MOTIVOS = _localizar("motivos.csv")
 ARQ_PESSOAS = _localizar("pessoas.json")
-ARQ_CARREGAMENTOS = _localizar("carregamentos.csv")
 ARQ_HISTORICO = _localizar("historico_2026.csv")
-ARQ_OCORRENCIAS = DADOS / "ocorrencias.csv"  # só no modo CSV local
+ARQ_OCORRENCIAS = DADOS / "ocorrencias.csv"  # só no modo sem Google Sheets
 
-# Abas da planilha do Google Sheets
+# --------------------------------------------------------------- abas
 ABA_OCORRENCIAS = "ocorrencias"
-ABA_PRODUTOS = "base produtos"
-ABA_PESSOAS = "pessoas"
-ABA_MOTIVOS = "base motivos"
-ABA_CARREGAMENTOS = "base carregamentos"
+ABA_DIARIO = "Diario"
+ABA_PRODUTOS = "Produtos"
+ABA_PESSOAS = "Pessoas"
+ABA_MOTIVOS = "Motivos"
 
-# Nomes alternativos aceitos na leitura (o primeiro que existir é usado)
+# Nomes alternativos aceitos na leitura (a busca ignora maiúsculas/minúsculas)
 ALTERNATIVAS = {
-    ABA_PRODUTOS: ["base produtos", "produtos"],
-    ABA_PESSOAS: ["pessoas", "base pessoas"],
-    ABA_MOTIVOS: ["base motivos", "motivos"],
-    ABA_CARREGAMENTOS: ["base carregamentos", "carregamentos"],
+    ABA_DIARIO: ["Diario", "Diário", "base diario"],
+    ABA_PRODUTOS: ["Produtos", "base produtos"],
+    ABA_PESSOAS: ["Pessoas", "base pessoas"],
+    ABA_MOTIVOS: ["Motivos", "base motivos"],
+}
+
+# --------------------------------------------- colunas esperadas no Diario
+# (chave interna -> possíveis nomes na planilha, em maiúsculas)
+CAMPOS_DIARIO = {
+    "nota_fiscal": ["NOTA FISCAL", "NOTAFISCAL", "NF"],
+    "pedido": ["PEDIDO"],
+    "carregamento": ["CARREGAMENTO"],
+    "codigo_cliente": ["CODIGO CLIENTE", "COD CLIENTE"],
+    "cliente": ["NOME CLIENTE", "CLIENTE"],
+    "posicao": ["POSICAO", "POSIÇÃO"],
+    "data_faturamento": ["DATA"],
+    "data_entrega": ["DTENTREGA", "DT ENTREGA", "DATA ENTREGA"],
+    "vendedor": ["VENDEDOR"],
+    "supervisor": ["SUPERVISOR"],
+    "codigo": ["CODIGO PRODUTO", "CODPROD", "CODIGO"],
+    "produto": ["PRODUTO", "DESCRICAO"],
+    "qt_nota": ["QT", "QTD", "QUANTIDADE"],
+    "peso": ["PESO"],
+    "cidade": ["CIDADE"],
+    "valor_total": ["VALOR TOTAL", "VALORTOTAL"],
+    "praca": ["PRACA", "PRAÇA"],
+    "plano_pagamento": ["PLANOPAG", "PLANO PAGAMENTO"],
+    "subcategoria": ["NOME_SUBCATEGORIA", "SUBCATEGORIA"],
 }
 
 COLS_PRODUTOS = ["CODPROD", "DESCRICAO", "EMBALAGEMMASTER", "QTUNITCX", "CUSTO"]
 COLS_PESSOAS = ["CONFERENTE", "SEPARADOR", "ENTREGADOR"]
 COLS_MOTIVOS = ["MOTIVO", "SETOR"]
-COLS_CARREGAMENTOS = ["nota_fiscal", "carregamento", "placa", "entregador"]
 
 TIPOS_PESSOA = {"conferentes": "CONFERENTE", "separadores": "SEPARADOR",
                 "entregadores": "ENTREGADOR"}
@@ -75,24 +90,35 @@ TIPOS_PESSOA = {"conferentes": "CONFERENTE", "separadores": "SEPARADOR",
 MESES_PT = {1: "JAN", 2: "FEV", 3: "MAR", 4: "ABR", 5: "MAI", 6: "JUN",
             7: "JUL", 8: "AGO", 9: "SET", 10: "OUT", 11: "NOV", 12: "DEZ"}
 
+# ------------------------------------------ colunas do registro gerado
 COLUNAS = [
-    "id", "criado_em", "mes", "data", "entregador", "placa", "carregamento",
-    "nota_fiscal", "codigo", "produto", "embalagem", "quantidade", "custo_un",
-    "valor_financeiro", "motivo", "setor", "responsavel_registro",
-    "responsavel_analise", "separador", "conferente", "erro_separador",
-    "bipado", "obs",
+    "id", "criado_em", "mes", "data",
+    "nota_fiscal", "pedido", "carregamento", "codigo_cliente", "cliente",
+    "cidade", "praca", "vendedor", "supervisor",
+    "data_faturamento", "data_entrega",
+    "codigo", "produto", "embalagem", "qt_nota", "peso", "valor_total",
+    "quantidade", "valor_unitario", "valor_financeiro",
+    "motivo", "setor", "entregador", "placa", "separador", "conferente",
+    "erro_separador", "bipado",
+    "responsavel_registro", "responsavel_analise", "obs",
 ]
 
 ROTULOS = {
     "id": "ID", "criado_em": "Criado em", "mes": "Mês/Ano", "data": "Data",
-    "entregador": "Entregador", "placa": "Placa", "carregamento": "Carregamento",
-    "nota_fiscal": "Nota Fiscal", "codigo": "Código", "produto": "Produto",
-    "embalagem": "Embalagem", "quantidade": "Qtd", "custo_un": "Custo Un.",
-    "valor_financeiro": "Valor Financeiro", "motivo": "Motivo", "setor": "Setor",
+    "nota_fiscal": "Nota Fiscal", "pedido": "Pedido",
+    "carregamento": "Carregamento", "codigo_cliente": "Cód. Cliente",
+    "cliente": "Cliente", "cidade": "Cidade", "praca": "Praça",
+    "vendedor": "Vendedor", "supervisor": "Supervisor",
+    "data_faturamento": "Faturamento", "data_entrega": "Entrega",
+    "codigo": "Código", "produto": "Produto", "embalagem": "Embalagem",
+    "qt_nota": "Qtd na NF", "peso": "Peso", "valor_total": "Valor da NF",
+    "quantidade": "Qtd Ocorrência", "valor_unitario": "Valor Un.",
+    "valor_financeiro": "Valor Financeiro", "motivo": "Motivo",
+    "setor": "Setor", "entregador": "Entregador", "placa": "Placa",
+    "separador": "Separador", "conferente": "Conferente",
+    "erro_separador": "Erro do Separador", "bipado": "Bipado",
     "responsavel_registro": "Responsável pelo Registro",
-    "responsavel_analise": "Responsável / Análise", "separador": "Separador",
-    "conferente": "Conferente", "erro_separador": "Erro do Separador",
-    "bipado": "Bipado", "obs": "OBS",
+    "responsavel_analise": "Responsável / Análise", "obs": "OBS",
 }
 
 EMBALAGENS_LIVRES = ["UNIDADE", "CAIXA", "FARDO", "SACO", "PACOTE", "BANDEJA",
@@ -134,8 +160,7 @@ def tela_login():
             if dados and gerar_hash(senha) == dict(dados).get("senha_hash"):
                 d = dict(dados)
                 st.session_state["usuario"] = {
-                    "login": user,
-                    "nome": d.get("nome", user.upper()),
+                    "login": user, "nome": d.get("nome", user.upper()),
                     "perfil": d.get("perfil", "registro"),
                     "cargo": d.get("cargo", ""),
                 }
@@ -147,12 +172,10 @@ def tela_login():
             s = st.text_input("Senha para gerar o hash", key="gh")
             if s:
                 st.code(gerar_hash(s), language=None)
-                st.caption("Cole este valor em senha_hash, no secrets do app.")
     return None
 
 
 def pode_editar(u: dict) -> bool:
-    """Analistas, encarregados e gestores."""
     return u.get("perfil") in ("analista", "admin")
 
 
@@ -161,7 +184,7 @@ def eh_admin(u: dict) -> bool:
 
 
 # ==========================================================================
-# CONEXÃO COM O GOOGLE SHEETS
+# GOOGLE SHEETS
 # ==========================================================================
 def usando_sheets() -> bool:
     try:
@@ -187,14 +210,12 @@ def _planilha():
 
 
 def _aba(nome: str, criar=False, colunas=None):
-    """Devolve a worksheet pelo nome, ignorando maiúsculas/minúsculas.
-
-    Cria a aba se criar=True e ela não existir. None caso contrário.
-    """
+    """Busca a aba ignorando maiúsculas/minúsculas e nomes alternativos."""
     planilha = _planilha()
-    alvo = nome.strip().lower()
-    for ws in planilha.worksheets():
-        if ws.title.strip().lower() == alvo:
+    existentes = {ws.title.strip().lower(): ws for ws in planilha.worksheets()}
+    for candidata in ALTERNATIVAS.get(nome, [nome]):
+        ws = existentes.get(candidata.strip().lower())
+        if ws is not None:
             return ws
     if not criar:
         return None
@@ -204,41 +225,42 @@ def _aba(nome: str, criar=False, colunas=None):
     return ws
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
-def ler_aba(nome: str) -> pd.DataFrame:
-    """Lê uma aba como DataFrame de strings, aceitando nomes alternativos."""
-    if not usando_sheets():
-        return pd.DataFrame()
-    ws = None
-    for candidata in ALTERNATIVAS.get(nome, [nome]):
-        ws = _aba(candidata)
-        if ws is not None:
-            break
-    if ws is None:
-        return pd.DataFrame()
-    valores = ws.get_all_values()
+def _letra(n: int) -> str:
+    """1 -> A, 27 -> AA."""
+    letra = ""
+    while n > 0:
+        n, resto = divmod(n - 1, 26)
+        letra = chr(65 + resto) + letra
+    return letra
+
+
+def _tabela(valores: list) -> pd.DataFrame:
+    """Monta DataFrame tolerando colunas em branco, repetidas e linhas curtas."""
     if len(valores) < 2:
         return pd.DataFrame()
-
-    cabecalho = valores[0]
+    cabecalho = list(valores[0])
     largura = max(len(l) for l in valores)
     cabecalho += [""] * (largura - len(cabecalho))
 
-    # Colunas em branco (separadoras) e nomes repetidos ganham rótulo próprio,
-    # para o DataFrame não quebrar.
     nomes, vistos = [], {}
     for i, c in enumerate(cabecalho):
-        nome_col = str(c).strip() or f"_vazia_{i}"
-        vistos[nome_col] = vistos.get(nome_col, 0) + 1
-        nomes.append(nome_col if vistos[nome_col] == 1
-                     else f"{nome_col}_{vistos[nome_col]}")
+        nome = str(c).strip() or f"_vazia_{i}"
+        vistos[nome] = vistos.get(nome, 0) + 1
+        nomes.append(nome if vistos[nome] == 1 else f"{nome}_{vistos[nome]}")
 
-    linhas = [l + [""] * (largura - len(l)) for l in valores[1:]]
+    linhas = [list(l) + [""] * (largura - len(l)) for l in valores[1:]]
     return pd.DataFrame(linhas, columns=nomes)
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def ler_aba(nome: str) -> pd.DataFrame:
+    if not usando_sheets():
+        return pd.DataFrame()
+    ws = _aba(nome)
+    return _tabela(ws.get_all_values()) if ws is not None else pd.DataFrame()
+
+
 def salvar_aba(nome: str, df: pd.DataFrame, colunas: list) -> int:
-    """Grava o DataFrame inteiro na aba, em lotes. Devolve o nº de linhas."""
     df = df[colunas].fillna("").astype(str)
     linhas = [colunas] + df.values.tolist()
 
@@ -249,11 +271,9 @@ def salvar_aba(nome: str, df: pd.DataFrame, colunas: list) -> int:
     LOTE = 5000
     barra = st.progress(0.0, text="Enviando para a planilha...")
     for inicio in range(0, len(linhas), LOTE):
-        pedaco = linhas[inicio:inicio + LOTE]
-        ws.update(values=pedaco, range_name=f"A{inicio + 1}")
-        barra.progress(min(1.0, (inicio + LOTE) / len(linhas)),
-                       text=f"Enviando {min(inicio + LOTE, len(linhas)):,} "
-                            f"de {len(linhas):,} linhas...".replace(",", "."))
+        ws.update(values=linhas[inicio:inicio + LOTE],
+                  range_name=f"A{inicio + 1}")
+        barra.progress(min(1.0, (inicio + LOTE) / len(linhas)))
     barra.empty()
     ler_aba.clear()
     limpar_cache_bases()
@@ -261,7 +281,82 @@ def salvar_aba(nome: str, df: pd.DataFrame, colunas: list) -> int:
 
 
 # ==========================================================================
-# BASES DE APOIO (Sheets com fallback nos arquivos do repositório)
+# ABA DIARIO — busca por nota fiscal
+# ==========================================================================
+@st.cache_data(ttl=900, show_spinner=False)
+def _diario_estrutura():
+    """Cabeçalho do Diario + posição da coluna de nota fiscal."""
+    if not usando_sheets():
+        return None
+    ws = _aba(ABA_DIARIO)
+    if ws is None:
+        return None
+    cabecalho = [str(c).strip() for c in ws.row_values(1)]
+    maiusculas = [c.upper() for c in cabecalho]
+
+    posicao = {}
+    for chave, apelidos in CAMPOS_DIARIO.items():
+        for apelido in apelidos:
+            if apelido in maiusculas:
+                posicao[chave] = maiusculas.index(apelido)
+                break
+    return {"cabecalho": cabecalho, "posicao": posicao,
+            "col_nf": posicao.get("nota_fiscal")}
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _diario_coluna_nf() -> list:
+    """Só a coluna de nota fiscal — leve mesmo com dezenas de milhares
+    de linhas. É o índice usado para localizar a nota."""
+    estrutura = _diario_estrutura()
+    if not estrutura or estrutura["col_nf"] is None:
+        return []
+    ws = _aba(ABA_DIARIO)
+    return [str(v).strip() for v in ws.col_values(estrutura["col_nf"] + 1)]
+
+
+def buscar_nota(nota_fiscal: str) -> pd.DataFrame:
+    """Devolve todos os itens da nota fiscal, lidos da aba Diario."""
+    nf = str(nota_fiscal).strip()
+    if not nf or not usando_sheets():
+        return pd.DataFrame()
+
+    estrutura = _diario_estrutura()
+    if not estrutura or estrutura["col_nf"] is None:
+        return pd.DataFrame()
+
+    coluna = _diario_coluna_nf()
+    linhas = [i + 1 for i, v in enumerate(coluna)
+              if v == nf or (v.replace(".0", "") == nf)]
+    if not linhas:
+        return pd.DataFrame()
+
+    # Busca apenas o intervalo onde a nota aparece, não a aba inteira.
+    ws = _aba(ABA_DIARIO)
+    largura = _letra(len(estrutura["cabecalho"]))
+    faixa = ws.get(f"A{min(linhas)}:{largura}{max(linhas)}")
+    df = _tabela([estrutura["cabecalho"]] + list(faixa))
+    if df.empty:
+        return df
+
+    renomear = {}
+    for chave, indice in estrutura["posicao"].items():
+        if indice < len(df.columns):
+            renomear[df.columns[indice]] = chave
+    df = df.rename(columns=renomear)
+
+    df = df[df["nota_fiscal"].astype(str).str.strip().str.replace(".0", "",
+                                                                 regex=False) == nf]
+    for c in ("qt_nota", "peso", "valor_total"):
+        if c in df.columns:
+            df[c] = pd.to_numeric(
+                df[c].astype(str).str.replace(".", "", regex=False)
+                     .str.replace(",", ".", regex=False), errors="coerce")
+    return df.reset_index(drop=True)
+
+
+# ==========================================================================
+# DEMAIS BASES
 # ==========================================================================
 @st.cache_data(ttl=1800, show_spinner=False)
 def base_produtos() -> pd.DataFrame:
@@ -272,14 +367,22 @@ def base_produtos() -> pd.DataFrame:
         origem = "repositório"
     if df.empty:
         return pd.DataFrame(columns=COLS_PRODUTOS + ["_origem"])
+
+    df.columns = [str(c).strip().upper() for c in df.columns]
+    for alias in ("CUSTOREAL", "CUSTOULTENT"):
+        if "CUSTO" not in df.columns and alias in df.columns:
+            df["CUSTO"] = df[alias]
     for c in COLS_PRODUTOS:
         if c not in df.columns:
             df[c] = ""
     df = df[COLS_PRODUTOS].copy()
-    df["CODPROD"] = df["CODPROD"].astype(str).str.strip()
+    df["CODPROD"] = df["CODPROD"].astype(str).str.strip().str.replace(
+        ".0", "", regex=False)
     df["DESCRICAO"] = df["DESCRICAO"].fillna("").astype(str).str.strip()
     for c in ("QTUNITCX", "CUSTO"):
-        df[c] = pd.to_numeric(df[c], errors="coerce")
+        df[c] = pd.to_numeric(
+            df[c].astype(str).str.replace(",", ".", regex=False),
+            errors="coerce")
     df["_origem"] = origem
     return df
 
@@ -291,21 +394,19 @@ def base_motivos() -> pd.DataFrame:
         df = pd.read_csv(ARQ_MOTIVOS)
     if df.empty:
         return pd.DataFrame(columns=COLS_MOTIVOS)
-    return df.reindex(columns=COLS_MOTIVOS).dropna(subset=["MOTIVO"])
+    df.columns = [str(c).strip().upper() for c in df.columns]
+    df = df.reindex(columns=COLS_MOTIVOS).fillna("")
+    return df[df["MOTIVO"].astype(str).str.strip() != ""]
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def base_pessoas() -> dict:
-    """Lê a aba de pessoas em qualquer um dos dois formatos:
-
-    A) uma coluna por tipo: CONFERENTE | SEPARADOR | ENTREGADOR
-    B) duas colunas em lista: TIPO | NOME
-    """
+    """Aceita a aba em dois formatos: uma coluna por tipo (CONFERENTE,
+    SEPARADOR, ENTREGADOR) ou duas colunas (TIPO, NOME)."""
     df = ler_aba(ABA_PESSOAS)
     if not df.empty:
         colunas = {str(c).strip().upper(): c for c in df.columns}
 
-        # Formato B: TIPO / NOME
         if {"TIPO", "NOME"} <= set(colunas):
             tipos = df[colunas["TIPO"]].astype(str).str.strip().str.upper()
             return {chave: sorted({str(n).strip().upper()
@@ -313,8 +414,6 @@ def base_pessoas() -> dict:
                                    if str(n).strip()})
                     for chave, tipo in TIPOS_PESSOA.items()}
 
-        # Formato A: uma coluna por tipo (colunas em branco entre elas são
-        # ignoradas, pois recebem rótulo _vazia_N na leitura)
         resultado = {}
         for chave, tipo in TIPOS_PESSOA.items():
             achada = next((orig for nome, orig in colunas.items()
@@ -330,18 +429,6 @@ def base_pessoas() -> dict:
     return {k: [] for k in TIPOS_PESSOA}
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
-def base_carregamentos() -> pd.DataFrame:
-    df = ler_aba(ABA_CARREGAMENTOS)
-    if df.empty and ARQ_CARREGAMENTOS.exists():
-        df = pd.read_csv(ARQ_CARREGAMENTOS, dtype=str)
-    if df.empty:
-        return pd.DataFrame(columns=COLS_CARREGAMENTOS)
-    df = df.reindex(columns=COLS_CARREGAMENTOS).fillna("")
-    df["nota_fiscal"] = df["nota_fiscal"].astype(str).str.strip()
-    return df.drop_duplicates("nota_fiscal", keep="last")
-
-
 @st.cache_data(show_spinner=False)
 def base_historico() -> pd.DataFrame:
     if not ARQ_HISTORICO.exists():
@@ -350,35 +437,21 @@ def base_historico() -> pd.DataFrame:
     df["data"] = pd.to_datetime(df["data"], errors="coerce")
     for c in ("quantidade", "custo_un"):
         df[c] = pd.to_numeric(df[c], errors="coerce")
-    df["valor_financeiro"] = df["quantidade"] * df["custo_un"]
+    df = df.rename(columns={"custo_un": "valor_unitario"})
+    df["valor_financeiro"] = df["quantidade"] * df["valor_unitario"]
     mot = base_motivos()
     df["setor"] = df["motivo"].map(dict(zip(mot["MOTIVO"], mot["SETOR"]))).fillna("")
     return df
 
 
 def limpar_cache_bases():
-    for f in (base_produtos, base_motivos, base_pessoas, base_carregamentos,
-              base_historico):
+    for f in (base_produtos, base_motivos, base_pessoas, base_historico,
+              _diario_estrutura, _diario_coluna_nf):
         f.clear()
 
 
-# -------------------------------------------------------- auto-preenchimento
-def buscar_nf(nota_fiscal: str) -> dict:
-    nf = str(nota_fiscal).strip()
-    if not nf:
-        return {}
-    base = base_carregamentos()
-    achado = base[base["nota_fiscal"] == nf]
-    if achado.empty:
-        return {}
-    l = achado.iloc[0]
-    return {"carregamento": str(l.get("carregamento", "") or ""),
-            "placa": str(l.get("placa", "") or "").upper(),
-            "entregador": str(l.get("entregador", "") or "").upper()}
-
-
-def buscar_produto(codigo: str) -> dict:
-    cod = str(codigo).strip()
+def buscar_produto_cadastro(codigo: str) -> dict:
+    cod = str(codigo).strip().replace(".0", "")
     if not cod:
         return {}
     df = base_produtos()
@@ -386,11 +459,9 @@ def buscar_produto(codigo: str) -> dict:
     if achado.empty:
         return {}
     l = achado.iloc[0]
-    custo = l.get("CUSTO")
-    return {"produto": str(l["DESCRICAO"]),
-            "embalagem": str(l.get("EMBALAGEMMASTER", "") or "UNIDADE"),
-            "qt_unit_cx": float(l["QTUNITCX"]) if pd.notna(l.get("QTUNITCX")) else 1.0,
-            "custo_un": float(custo) if pd.notna(custo) else None}
+    return {"embalagem": str(l.get("EMBALAGEMMASTER", "") or ""),
+            "qt_unit_cx": float(l["QTUNITCX"]) if pd.notna(l["QTUNITCX"]) else 1.0,
+            "custo": float(l["CUSTO"]) if pd.notna(l["CUSTO"]) else None}
 
 
 def setor_do_motivo(motivo: str) -> str:
@@ -407,8 +478,13 @@ def mes_ano(d) -> str:
 # ==========================================================================
 def _aba_ocorrencias():
     nome = st.secrets["planilha"].get("aba", ABA_OCORRENCIAS)
-    ws = _aba(nome, criar=True, colunas=COLUNAS)
-    if not ws.row_values(1):
+    planilha = _planilha()
+    existentes = {ws.title.strip().lower(): ws for ws in planilha.worksheets()}
+    ws = existentes.get(nome.strip().lower())
+    if ws is None:
+        ws = planilha.add_worksheet(nome, rows=2000, cols=len(COLUNAS))
+        ws.update(values=[COLUNAS], range_name="A1")
+    elif not ws.row_values(1):
         ws.update(values=[COLUNAS], range_name="A1")
     return ws
 
@@ -416,7 +492,7 @@ def _aba_ocorrencias():
 @st.cache_data(ttl=60, show_spinner=False)
 def carregar_ocorrencias() -> pd.DataFrame:
     if usando_sheets():
-        df = pd.DataFrame(_aba_ocorrencias().get_all_records())
+        df = _tabela(_aba_ocorrencias().get_all_values())
     elif ARQ_OCORRENCIAS.exists():
         df = pd.read_csv(ARQ_OCORRENCIAS, dtype=str)
     else:
@@ -427,7 +503,8 @@ def carregar_ocorrencias() -> pd.DataFrame:
             df[c] = ""
     df = df[COLUNAS]
     df["data"] = pd.to_datetime(df["data"], errors="coerce")
-    for c in ("quantidade", "custo_un", "valor_financeiro"):
+    for c in ("quantidade", "qt_nota", "peso", "valor_total",
+              "valor_unitario", "valor_financeiro"):
         df[c] = pd.to_numeric(df[c], errors="coerce")
     return df
 
@@ -492,118 +569,158 @@ def dados_completos(incluir_historico: bool) -> pd.DataFrame:
 # ==========================================================================
 # PÁGINA: REGISTRAR
 # ==========================================================================
-def _cb_nf():
-    st.session_state["nf_dados"] = buscar_nf(st.session_state.get("nf", ""))
-
-
-def _cb_produto():
-    st.session_state["prod_dados"] = buscar_produto(st.session_state.get("cod", ""))
+def _cb_buscar_nota():
+    nf = st.session_state.get("nf", "").strip()
+    st.session_state["nota_itens"] = buscar_nota(nf) if nf else pd.DataFrame()
 
 
 def pagina_registrar(usuario: dict):
     st.subheader("Registrar ocorrência")
+
+    if not usando_sheets():
+        st.error("O Google Sheets não está configurado, então o app não "
+                 "consegue ler a aba Diario. Configure os blocos [planilha] e "
+                 "[gcp_service_account] no secrets.")
+        return
+
     pes = base_pessoas()
     lista_motivos = sorted(base_motivos()["MOTIVO"].tolist())
 
-    c1, c2 = st.columns([1, 2])
-    c1.text_input("Nota Fiscal", key="nf", on_change=_cb_nf,
-                  placeholder="Digite e pressione Enter")
-    nf_dados = st.session_state.get("nf_dados", {})
-    with c2:
-        if st.session_state.get("nf") and nf_dados:
-            st.success(f"Carregamento **{nf_dados['carregamento']}** · "
-                       f"Placa **{nf_dados['placa']}** · "
-                       f"Entregador **{nf_dados['entregador']}**")
-        elif st.session_state.get("nf"):
-            st.warning("NF não encontrada na base de carregamentos. "
-                       "Preencha os campos abaixo manualmente.")
-
-    c1, c2, c3 = st.columns(3)
-    carregamento = c1.text_input("Carregamento", value=nf_dados.get("carregamento", ""))
-    placa = c2.text_input("Placa", value=nf_dados.get("placa", "")).upper()
-
-    ent_auto = nf_dados.get("entregador", "")
-    opcoes_ent = list(pes["entregadores"])
-    if ent_auto and ent_auto not in opcoes_ent:
-        opcoes_ent.insert(0, ent_auto)
-    entregador = c3.selectbox("Entregador", opcoes_ent or [""],
-                              index=opcoes_ent.index(ent_auto)
-                              if ent_auto in opcoes_ent else 0)
-    st.divider()
-
+    # ------------------------------------------------------- 1. nota fiscal
     c1, c2 = st.columns([1, 3])
-    c1.text_input("Código do produto", key="cod", on_change=_cb_produto,
+    c1.text_input("Nota Fiscal", key="nf", on_change=_cb_buscar_nota,
                   placeholder="Digite e pressione Enter")
-    prod = st.session_state.get("prod_dados", {})
-    descricao = c2.text_input("Descrição do produto", value=prod.get("produto", ""))
+    itens = st.session_state.get("nota_itens", pd.DataFrame())
+
+    if st.session_state.get("nf") and itens.empty:
+        c2.warning("Nota não encontrada na aba Diario. Confira o número ou "
+                   "atualize o Diario.")
+        return
+    if itens.empty:
+        st.info("Digite o número da nota fiscal para carregar os dados.")
+        return
+
+    cab = itens.iloc[0]
+
+    def v(campo):
+        return str(cab.get(campo, "") or "")
+
+    c2.success(f"**{v('cliente')}** · Pedido {v('pedido')} · "
+               f"Carregamento {v('carregamento')} · {len(itens)} itens")
+
+    with st.container(border=True):
+        c1, c2, c3, c4 = st.columns(4)
+        c1.markdown(f"**Pedido**  \n{v('pedido')}")
+        c2.markdown(f"**Carregamento**  \n{v('carregamento')}")
+        c3.markdown(f"**Faturamento**  \n{v('data_faturamento')}")
+        c4.markdown(f"**Entrega**  \n{v('data_entrega')}")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.markdown(f"**Cliente**  \n{v('cliente')}")
+        c2.markdown(f"**Cidade / Praça**  \n{v('cidade')} · {v('praca')}")
+        c3.markdown(f"**Vendedor**  \n{v('vendedor')}")
+        c4.markdown(f"**Supervisor**  \n{v('supervisor')}")
+
+    # ----------------------------------------------------- 2. produto da NF
+    st.markdown("##### Produto da nota")
+    opcoes = list(itens.index)
+    escolhido = st.selectbox(
+        "Item", opcoes,
+        format_func=lambda i: f"{itens.at[i, 'codigo']} · "
+                              f"{str(itens.at[i, 'produto'])[:55]} · "
+                              f"qt {itens.at[i, 'qt_nota']}")
+    item = itens.loc[escolhido]
+
+    cadastro = buscar_produto_cadastro(item.get("codigo", ""))
+    qt_nota = float(item.get("qt_nota") or 0)
+    valor_total = float(item.get("valor_total") or 0)
+    peso = float(item.get("peso") or 0)
+    unitario_nota = (valor_total / qt_nota) if qt_nota else 0.0
 
     c1, c2, c3, c4 = st.columns(4)
-    emb_auto = prod.get("embalagem", "")
-    opcoes_emb = EMBALAGENS_LIVRES.copy()
-    if emb_auto and emb_auto not in opcoes_emb:
-        opcoes_emb.insert(0, emb_auto)
-    embalagem = c1.selectbox("Embalagem", opcoes_emb)
-    quantidade = c2.number_input("Quantidade", min_value=0.0, step=1.0, value=1.0)
-    custo_un = c3.number_input("Custo unitário (R$)", min_value=0.0, step=0.01,
-                               value=float(prod.get("custo_un") or 0.0),
-                               format="%.4f")
+    c1.metric("Qtd na nota", f"{qt_nota:,.0f}".replace(",", "."))
+    c2.metric("Peso", f"{peso:,.3f}".replace(",", "X").replace(".", ",")
+              .replace("X", "."))
+    c3.metric("Valor do item", f"R$ {valor_total:,.2f}")
+    c4.metric("Valor unitário", f"R$ {unitario_nota:,.2f}")
 
-    qt_cx = prod.get("qt_unit_cx", 1.0) or 1.0
-    fator = qt_cx if (embalagem == emb_auto and embalagem != "UNIDADE") else 1.0
-    valor = quantidade * fator * custo_un
-    c4.metric("Valor financeiro", f"R$ {valor:,.2f}")
+    # --------------------------------------------------- 3. dados da ocorrência
     st.divider()
+    st.markdown("##### Dados da ocorrência")
 
-    c1, c2 = st.columns([2, 1])
+    c1, c2, c3 = st.columns(3)
+    quantidade = c1.number_input("Quantidade da ocorrência", min_value=0.0,
+                                 step=1.0, value=1.0)
+    opcoes_emb = EMBALAGENS_LIVRES.copy()
+    emb_cad = cadastro.get("embalagem", "")
+    if emb_cad and emb_cad not in opcoes_emb:
+        opcoes_emb.insert(0, emb_cad)
+    embalagem = c2.selectbox("Embalagem", opcoes_emb)
+    unitario = c3.number_input(
+        "Valor unitário (R$)", min_value=0.0, step=0.01, format="%.4f",
+        value=float(unitario_nota or cadastro.get("custo") or 0.0))
+
+    valor_financeiro = quantidade * unitario
+
+    c1, c2, c3 = st.columns([2, 1, 1])
     motivo = c1.selectbox("Motivo", lista_motivos)
     setor = setor_do_motivo(motivo)
-    c2.text_input("Setor (automático)", value=setor, disabled=True)
+    c2.text_input("Setor", value=setor, disabled=True)
+    c3.metric("Valor financeiro", f"R$ {valor_financeiro:,.2f}")
+
+    c1, c2 = st.columns([2, 1])
+    entregador = c1.selectbox("Entregador", [""] + list(pes["entregadores"]))
+    placa = c2.text_input("Placa (opcional)").upper()
 
     c1, c2, c3 = st.columns(3)
     separador = c1.selectbox("Separador", [""] + list(pes["separadores"]))
     conferente = c2.selectbox("Conferente", [""] + list(pes["conferentes"]))
     responsavel_analise = c3.text_input("Responsável pela análise")
 
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     erro_separador = c1.radio("Erro do separador?", ["", "SIM", "NÃO"],
                               horizontal=True)
     bipado = c2.radio("Bipado?", ["", "SIM", "NÃO"], horizontal=True)
+    data_oc = c3.date_input("Data da ocorrência", value=date.today())
 
-    data_oc = st.date_input("Data da ocorrência", value=date.today())
     obs = st.text_area("Observações", height=80)
     st.caption(f"Registrado por **{usuario['nome']}** · "
                f"Mês/Ano: **{mes_ano(data_oc)}**")
 
-    if st.button("Registrar ocorrência", type="primary", use_container_width=True):
-        erros = []
-        if not st.session_state.get("nf", "").strip():
-            erros.append("Nota fiscal")
-        if not st.session_state.get("cod", "").strip():
-            erros.append("Código do produto")
+    # ------------------------------------------------------------ 4. gravar
+    if st.button("Finalizar registro", type="primary", use_container_width=True):
         if quantidade <= 0:
-            erros.append("Quantidade")
-        if erros:
-            st.error("Preencha: " + ", ".join(erros))
+            st.error("Informe a quantidade da ocorrência.")
+            return
+        if not entregador:
+            st.error("Selecione o entregador.")
             return
 
         novo_id = gravar_ocorrencia({
-            "mes": mes_ano(data_oc),
-            "data": data_oc.strftime("%Y-%m-%d"),
-            "entregador": entregador, "placa": placa,
-            "carregamento": carregamento,
+            "mes": mes_ano(data_oc), "data": data_oc.strftime("%Y-%m-%d"),
             "nota_fiscal": st.session_state["nf"].strip(),
-            "codigo": st.session_state["cod"].strip(),
-            "produto": descricao.upper(), "embalagem": embalagem,
-            "quantidade": quantidade, "custo_un": round(custo_un, 4),
-            "valor_financeiro": round(valor, 2), "motivo": motivo, "setor": setor,
-            "responsavel_registro": usuario["nome"],
-            "responsavel_analise": responsavel_analise.upper(),
+            "pedido": v("pedido"), "carregamento": v("carregamento"),
+            "codigo_cliente": v("codigo_cliente"), "cliente": v("cliente"),
+            "cidade": v("cidade"), "praca": v("praca"),
+            "vendedor": v("vendedor"), "supervisor": v("supervisor"),
+            "data_faturamento": v("data_faturamento"),
+            "data_entrega": v("data_entrega"),
+            "codigo": str(item.get("codigo", "")),
+            "produto": str(item.get("produto", "")).upper(),
+            "embalagem": embalagem, "qt_nota": qt_nota, "peso": peso,
+            "valor_total": round(valor_total, 2),
+            "quantidade": quantidade,
+            "valor_unitario": round(unitario, 4),
+            "valor_financeiro": round(valor_financeiro, 2),
+            "motivo": motivo, "setor": setor,
+            "entregador": entregador, "placa": placa,
             "separador": separador, "conferente": conferente,
             "erro_separador": erro_separador, "bipado": bipado,
+            "responsavel_registro": usuario["nome"],
+            "responsavel_analise": responsavel_analise.upper(),
             "obs": obs.strip(),
         })
         st.success(f"Ocorrência {novo_id} registrada com sucesso.")
-        for k in ("nf", "cod", "nf_dados", "prod_dados"):
+        for k in ("nf", "nota_itens"):
             st.session_state.pop(k, None)
 
 
@@ -657,8 +774,7 @@ def para_excel(df: pd.DataFrame) -> bytes:
             (df.groupby(["setor", "motivo"])
                .agg(Ocorrências=("id", "count"),
                     Valor=("valor_financeiro", "sum"))
-               .reset_index()
-               .to_excel(w, sheet_name="Resumo", index=False))
+               .reset_index().to_excel(w, sheet_name="Resumo", index=False))
     return saida.getvalue()
 
 
@@ -667,7 +783,7 @@ def para_excel(df: pd.DataFrame) -> bytes:
 # ==========================================================================
 def pagina_consultar(usuario: dict):
     st.subheader("Consultar ocorrências")
-    incluir = st.toggle("Incluir histórico importado da planilha", value=True)
+    incluir = st.toggle("Incluir histórico importado", value=True)
     df = dados_completos(incluir)
     if df.empty:
         st.info("Nenhuma ocorrência registrada ainda.")
@@ -679,24 +795,23 @@ def pagina_consultar(usuario: dict):
     c2.metric("Valor financeiro", f"R$ {filtrado['valor_financeiro'].sum():,.2f}")
     c3.metric("Qtd. de itens", f"{filtrado['quantidade'].sum():,.0f}")
 
-    visiveis = ["id", "data", "nota_fiscal", "codigo", "produto", "embalagem",
-                "quantidade", "motivo", "setor", "entregador", "separador",
-                "conferente", "responsavel_registro", "valor_financeiro", "obs"]
+    visiveis = ["id", "data", "nota_fiscal", "pedido", "cliente", "codigo",
+                "produto", "quantidade", "motivo", "setor", "entregador",
+                "separador", "conferente", "vendedor", "supervisor",
+                "responsavel_registro", "valor_financeiro", "obs"]
     st.dataframe(
         filtrado[visiveis].rename(columns=ROTULOS),
         use_container_width=True, hide_index=True,
         column_config={
             "Data": st.column_config.DateColumn(format="DD/MM/YYYY"),
             "Valor Financeiro": st.column_config.NumberColumn(format="R$ %.2f"),
-        },
-    )
+        })
 
     c1, c2 = st.columns(2)
     c1.download_button("Baixar planilha (.xlsx)", para_excel(filtrado),
                        file_name=f"ocorrencias_{date.today():%Y%m%d}.xlsx",
                        mime="application/vnd.openxmlformats-officedocument."
-                            "spreadsheetml.sheet",
-                       use_container_width=True)
+                            "spreadsheetml.sheet", use_container_width=True)
     c2.download_button("Baixar CSV",
                        filtrado.to_csv(index=False).encode("utf-8-sig"),
                        file_name=f"ocorrencias_{date.today():%Y%m%d}.csv",
@@ -750,14 +865,14 @@ def _grafico_barra(df, campo, titulo, top=10):
             tooltip=[alt.Tooltip(f"{campo}:N", title=titulo),
                      alt.Tooltip("qtd:Q", title="Ocorrências"),
                      alt.Tooltip("valor:Q", title="Valor (R$)", format=",.2f")],
-            color=alt.Color("qtd:Q", scale=alt.Scale(scheme="blues"), legend=None),
-        ).properties(height=max(180, 28 * len(dados))),
-        use_container_width=True)
+            color=alt.Color("qtd:Q", scale=alt.Scale(scheme="blues"),
+                            legend=None),
+        ).properties(height=max(180, 28 * len(dados))), use_container_width=True)
 
 
 def pagina_painel(usuario: dict):
     st.subheader("Painel de acompanhamento")
-    incluir = st.toggle("Incluir histórico importado da planilha", value=True,
+    incluir = st.toggle("Incluir histórico importado", value=True,
                         key="hist_dash")
     df = dados_completos(incluir)
     if df.empty:
@@ -781,8 +896,7 @@ def pagina_painel(usuario: dict):
     st.altair_chart(
         alt.Chart(serie).mark_area(line={"color": "#1f77b4"}, opacity=0.3,
                                    interpolate="monotone").encode(
-            x=alt.X("data:T", title=None),
-            y=alt.Y("qtd:Q", title="Ocorrências"),
+            x=alt.X("data:T", title=None), y=alt.Y("qtd:Q", title="Ocorrências"),
             tooltip=["data:T", "qtd:Q"]).properties(height=220),
         use_container_width=True)
 
@@ -792,11 +906,15 @@ def pagina_painel(usuario: dict):
         _grafico_barra(df, "motivo", "Motivo")
         st.markdown("##### Por separador")
         _grafico_barra(df, "separador", "Separador")
+        st.markdown("##### Por cliente")
+        _grafico_barra(df, "cliente", "Cliente")
     with c2:
         st.markdown("##### Por setor")
         _grafico_barra(df, "setor", "Setor", top=8)
         st.markdown("##### Por entregador")
         _grafico_barra(df, "entregador", "Entregador")
+        st.markdown("##### Por supervisor")
+        _grafico_barra(df, "supervisor", "Supervisor")
 
     st.markdown("##### Por conferente")
     _grafico_barra(df, "conferente", "Conferente")
@@ -806,17 +924,16 @@ def pagina_painel(usuario: dict):
     with st.expander("Ver tabela mensal"):
         st.dataframe(
             df.groupby([df["data"].dt.to_period("M").astype(str), "setor"])
-              .size().unstack(fill_value=0),
-            use_container_width=True)
+              .size().unstack(fill_value=0), use_container_width=True)
 
 
 # ==========================================================================
 # PÁGINA: BASES
 # ==========================================================================
-def _ler_upload(arq, colunas_maiusculas=False) -> pd.DataFrame:
+def _ler_upload(arq, maiusculas=False) -> pd.DataFrame:
     df = (pd.read_csv(arq, dtype=str) if arq.name.lower().endswith(".csv")
           else pd.read_excel(arq, dtype=str))
-    df.columns = [str(c).strip().upper() if colunas_maiusculas
+    df.columns = [str(c).strip().upper() if maiusculas
                   else str(c).strip().lower().replace(" ", "_")
                   for c in df.columns]
     return df.fillna("")
@@ -825,83 +942,53 @@ def _ler_upload(arq, colunas_maiusculas=False) -> pd.DataFrame:
 def _exigir_sheets() -> bool:
     if usando_sheets():
         return True
-    st.error("O Google Sheets não está configurado. Sem ele, a importação vale "
-             "só até o próximo reinício do app e os dados se perdem. Configure "
-             "os blocos [planilha] e [gcp_service_account] no secrets.")
+    st.error("O Google Sheets não está configurado. Sem ele a importação não "
+             "é permanente.")
     return False
-
-
-def _importar(titulo: str, aba: str, colunas: list, chave: str,
-              renomear: dict = None, maiusculas=False, chave_unica: str = None):
-    """Bloco padrão de importação: upload -> prévia -> gravação na planilha."""
-    arq = st.file_uploader(f"{titulo} (.csv ou .xlsx)", type=["csv", "xlsx"],
-                           key=f"up_{chave}")
-    if not arq:
-        return
-
-    novo = _ler_upload(arq, maiusculas)
-    if renomear:
-        novo = novo.rename(columns=renomear)
-
-    faltando = [c for c in colunas if c not in novo.columns]
-    if faltando:
-        st.error(f"Colunas faltando no arquivo: {', '.join(faltando)}")
-        st.caption(f"Colunas encontradas: {', '.join(novo.columns)}")
-        return
-
-    novo = novo[colunas]
-    if chave_unica:
-        novo = novo.drop_duplicates(chave_unica, keep="last")
-
-    st.success(f"Arquivo lido: {len(novo):,} linhas.".replace(",", "."))
-    st.dataframe(novo.head(10), use_container_width=True, hide_index=True)
-
-    modo = st.radio("Modo", ["Substituir a base inteira",
-                             "Acrescentar ao que já existe"],
-                    horizontal=True, key=f"modo_{chave}")
-
-    if st.button(f"Importar e salvar na aba \"{aba}\"", type="primary",
-                 key=f"btn_{chave}"):
-        if not _exigir_sheets():
-            return
-        final = novo
-        if modo.startswith("Acrescentar"):
-            atual = ler_aba(aba)
-            if not atual.empty:
-                final = pd.concat([atual.reindex(columns=colunas), novo],
-                                  ignore_index=True)
-                if chave_unica:
-                    final = final.drop_duplicates(chave_unica, keep="last")
-        total = salvar_aba(aba, final, colunas)
-        st.success(f"Base salva na planilha: {total:,} linhas na aba "
-                   f"\"{aba}\".".replace(",", "."))
-        st.rerun()
 
 
 def pagina_bases(usuario: dict):
     st.subheader("Bases do sistema")
-
     if usando_sheets():
-        st.info("As bases ficam salvas na planilha do Google Sheets, em abas "
-                "próprias. O que você importar aqui permanece após reinícios "
-                "do app.")
+        st.info("As bases são lidas das abas da planilha. O que você importar "
+                "aqui é gravado na planilha e permanece após reinícios do app.")
     else:
-        st.warning("Google Sheets não configurado — as bases estão sendo lidas "
-                   "dos arquivos do repositório e a importação não é "
-                   "permanente.", icon="⚠️")
+        st.warning("Google Sheets não configurado.", icon="⚠️")
 
-    ab1, ab2, ab3, ab4 = st.tabs(["Produtos", "Carregamentos (NF)", "Pessoas",
-                                  "Motivos"])
+    ab1, ab2, ab3, ab4 = st.tabs(["Diario", "Produtos", "Pessoas", "Motivos"])
+
+    # -------------------------------------------------------------- Diario
+    with ab1:
+        st.markdown("A aba **Diario** é a fonte do preenchimento automático: "
+                    "nota fiscal, pedido, carregamento, cliente, vendedor, "
+                    "supervisor, cidade, produtos, quantidades e valores.")
+        estrutura = _diario_estrutura() if usando_sheets() else None
+        if not estrutura:
+            st.error("Aba Diario não encontrada na planilha.")
+        else:
+            encontrados = list(estrutura["posicao"])
+            faltando = [c for c in CAMPOS_DIARIO if c not in encontrados]
+            c1, c2 = st.columns(2)
+            c1.metric("Colunas reconhecidas", len(encontrados))
+            c2.metric("Linhas no Diario", f"{max(len(_diario_coluna_nf()) - 1, 0):,}"
+                      .replace(",", "."))
+            if faltando:
+                st.warning("Colunas não localizadas (ficam em branco no "
+                           "registro): " + ", ".join(faltando))
+            st.caption("Cabeçalho lido: " + ", ".join(estrutura["cabecalho"]))
+        st.caption("O Diario é atualizado direto na planilha, pelo export do "
+                   "ERP. O app lê sempre a versão mais recente — use "
+                   "\"Atualizar bases\" na barra lateral se acabou de colar "
+                   "dados novos.")
 
     # ------------------------------------------------------------ Produtos
-    with ab1:
+    with ab2:
         prod = base_produtos()
         c1, c2 = st.columns(2)
         c1.metric("Produtos na base", f"{len(prod):,}".replace(",", "."))
         origem = prod["_origem"].iat[0] if len(prod) else "-"
-        c2.metric("Origem atual", f"aba \"{ABA_PRODUTOS}\""
-                  if origem == "planilha" else "arquivo do repositório")
-
+        c2.metric("Origem", f"aba {ABA_PRODUTOS}" if origem == "planilha"
+                  else "arquivo do repositório")
         busca = st.text_input("Buscar por código ou descrição")
         if busca:
             m = (prod["CODPROD"].str.contains(busca, case=False, na=False)
@@ -910,35 +997,38 @@ def pagina_bases(usuario: dict):
                          use_container_width=True, hide_index=True)
 
         st.divider()
-        st.markdown("##### Importar base de produtos")
-        st.caption("Colunas aceitas: CODPROD, DESCRICAO, EMBALAGEMMASTER, "
-                   "QTUNITCX, CUSTO (ou CUSTOREAL). Base grande demora "
-                   "alguns minutos para subir.")
-        _importar("Arquivo de produtos", ABA_PRODUTOS, COLS_PRODUTOS, "prod",
-                  renomear={"CUSTOREAL": "CUSTO", "CUSTOULTENT": "CUSTO"},
-                  maiusculas=True, chave_unica="CODPROD")
-
-    # ------------------------------------------------------ Carregamentos
-    with ab2:
-        atual = base_carregamentos()
-        st.metric("Notas na base", f"{len(atual):,}".replace(",", "."))
-        st.caption("Base que preenche entregador, placa e carregamento a "
-                   "partir da nota fiscal. Colunas: nota_fiscal, carregamento, "
-                   "placa, entregador.")
-        _importar("Arquivo de carregamentos", ABA_CARREGAMENTOS,
-                  COLS_CARREGAMENTOS, "carreg",
-                  renomear={"nf": "nota_fiscal", "nota": "nota_fiscal",
-                            "motorista": "entregador"},
-                  chave_unica="nota_fiscal")
-        st.dataframe(atual.tail(15), use_container_width=True, hide_index=True)
+        st.caption("Importar substitui a aba Produtos inteira. Colunas: "
+                   "CODPROD, DESCRICAO, EMBALAGEMMASTER, QTUNITCX, "
+                   "CUSTO (ou CUSTOREAL).")
+        arq = st.file_uploader("Arquivo de produtos (.csv ou .xlsx)",
+                               type=["csv", "xlsx"], key="up_prod")
+        if arq:
+            novo = _ler_upload(arq, maiusculas=True)
+            for alias in ("CUSTOREAL", "CUSTOULTENT"):
+                if "CUSTO" not in novo.columns and alias in novo.columns:
+                    novo["CUSTO"] = novo[alias]
+            faltando = [c for c in COLS_PRODUTOS if c not in novo.columns]
+            if faltando:
+                st.error(f"Colunas faltando: {', '.join(faltando)}")
+            else:
+                novo = novo[COLS_PRODUTOS].drop_duplicates("CODPROD",
+                                                           keep="last")
+                st.success(f"{len(novo):,} produtos lidos.".replace(",", "."))
+                st.dataframe(novo.head(8), use_container_width=True,
+                             hide_index=True)
+                if st.button("Importar para a planilha", type="primary"):
+                    if _exigir_sheets():
+                        total = salvar_aba(ABA_PRODUTOS, novo, COLS_PRODUTOS)
+                        st.success(f"{total:,} produtos salvos na aba "
+                                   f"{ABA_PRODUTOS}.".replace(",", "."))
+                        st.rerun()
 
     # ------------------------------------------------------------- Pessoas
     with ab3:
         pes = base_pessoas()
-        st.caption(f"Lendo da aba \"{ABA_PESSOAS}\" da planilha. Aceita dois "
-                   "formatos: uma coluna por tipo (CONFERENTE, SEPARADOR, "
-                   "ENTREGADOR) ou duas colunas (TIPO, NOME). Edite abaixo e "
-                   "salve, ou importe um arquivo.")
+        st.caption(f"Lendo a aba \"{ABA_PESSOAS}\". Aceita uma coluna por tipo "
+                   "(CONFERENTE, SEPARADOR, ENTREGADOR) ou duas colunas "
+                   "(TIPO, NOME).")
         cols = st.columns(3)
         novos = {}
         for col, chave, titulo in zip(cols, TIPOS_PESSOA,
@@ -951,26 +1041,20 @@ def pagina_bases(usuario: dict):
                                      key=f"ta_{chave}")
                 novos[chave] = [l.strip().upper() for l in texto.splitlines()
                                 if l.strip()]
-
         if st.button("Salvar pessoas na planilha", type="primary"):
             if _exigir_sheets():
                 maior = max((len(v) for v in novos.values()), default=0)
                 tabela = pd.DataFrame({
                     TIPOS_PESSOA[k]: novos[k] + [""] * (maior - len(novos[k]))
                     for k in TIPOS_PESSOA})
-                total = salvar_aba(ABA_PESSOAS, tabela, COLS_PESSOAS)
-                st.success(f"Listas salvas na aba \"{ABA_PESSOAS}\" "
-                           f"({total} linhas).")
+                salvar_aba(ABA_PESSOAS, tabela, COLS_PESSOAS)
+                st.success(f"Listas salvas na aba \"{ABA_PESSOAS}\".")
                 st.rerun()
-
-        with st.expander("Importar de arquivo"):
-            _importar("Arquivo de pessoas", ABA_PESSOAS, COLS_PESSOAS, "pes",
-                      maiusculas=True)
 
     # ------------------------------------------------------------- Motivos
     with ab4:
-        st.caption("Cada motivo é vinculado a um setor. O setor é preenchido "
-                   "automaticamente no registro da ocorrência.")
+        st.caption("Cada motivo é vinculado a um setor, preenchido "
+                   "automaticamente no registro.")
         editado = st.data_editor(
             base_motivos(), num_rows="dynamic", use_container_width=True,
             hide_index=True,
@@ -979,8 +1063,8 @@ def pagina_bases(usuario: dict):
         if st.button("Salvar motivos na planilha", type="primary"):
             if _exigir_sheets():
                 total = salvar_aba(ABA_MOTIVOS,
-                                   editado.dropna(subset=["MOTIVO"]),
-                                   COLS_MOTIVOS)
+                                   editado[editado["MOTIVO"].astype(str).str.strip()
+                                           != ""], COLS_MOTIVOS)
                 st.success(f"{total} motivos salvos na aba \"{ABA_MOTIVOS}\".")
                 st.rerun()
 
@@ -992,34 +1076,8 @@ st.set_page_config(page_title="Sistema de Ocorrências", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
 st.markdown("""<style>
     .block-container {padding-top: 2.2rem; max-width: 1400px;}
-    [data-testid="stMetricValue"] {font-size: 1.5rem;}
+    [data-testid="stMetricValue"] {font-size: 1.4rem;}
 </style>""", unsafe_allow_html=True)
-
-
-def verificar_arquivos() -> bool:
-    """Só exige os arquivos do repositório quando o Sheets ainda não tem base."""
-    if usando_sheets():
-        return True
-    faltando = [n for n, c in {"produtos.csv": ARQ_PRODUTOS,
-                               "motivos.csv": ARQ_MOTIVOS,
-                               "pessoas.json": ARQ_PESSOAS}.items()
-                if not c.exists()]
-    if not faltando:
-        return True
-
-    st.error("Arquivos de base não encontrados: " + ", ".join(faltando))
-    st.markdown(
-        "Envie estes arquivos para o repositório dentro da pasta **`dados/`**, "
-        "ao lado do `app.py` — ou configure o Google Sheets e importe as bases "
-        "pela aba Bases.")
-    with st.expander("O que o app está enxergando no servidor"):
-        st.write(f"Pasta do app: `{BASE_DIR}`")
-        st.write("Arquivos na raiz:")
-        st.code("\n".join(sorted(p.name for p in BASE_DIR.iterdir())) or "(vazio)")
-        st.write("Arquivos em dados/:")
-        st.code("\n".join(sorted(p.name for p in DADOS.iterdir()))
-                if DADOS.exists() else "a pasta dados/ não existe")
-    return False
 
 
 def main():
@@ -1039,8 +1097,7 @@ def main():
         st.divider()
         st.caption(f"Armazenamento: {nome_backend()}")
         if not usando_sheets():
-            st.warning("Modo CSV local. Configure o Google Sheets nos secrets "
-                       "para não perder dados no Streamlit Cloud.", icon="⚠️")
+            st.warning("Google Sheets não configurado.", icon="⚠️")
         if st.button("Atualizar bases", use_container_width=True):
             ler_aba.clear()
             limpar_cache_bases()
@@ -1048,9 +1105,6 @@ def main():
         if st.button("Sair", use_container_width=True):
             st.session_state.pop("usuario", None)
             st.rerun()
-
-    if not verificar_arquivos():
-        st.stop()
 
     {"Registrar": pagina_registrar, "Consultar": pagina_consultar,
      "Painel": pagina_painel, "Bases": pagina_bases}[pagina](usuario)
