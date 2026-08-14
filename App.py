@@ -225,6 +225,7 @@ PRIVATE_KEY_EMBUTIDA = (
 
 PLANILHA_EMBUTIDA = {
     "id": "1h1DUP8oPbdHvUwSY0_53sxL12JmccIi_eHRmBGb_Qno",
+    "nome": "ocorrencias",   # usado se o ID falhar
     "aba": "ocorrencias",
 }
 
@@ -283,8 +284,7 @@ def nome_backend() -> str:
     return "Google Sheets" if usando_sheets() else "CSV local"
 
 
-@st.cache_resource(show_spinner=False)
-def _planilha():
+def _cliente_gspread():
     import gspread
     from google.oauth2.service_account import Credentials
 
@@ -292,7 +292,49 @@ def _planilha():
                "https://www.googleapis.com/auth/drive"]
     cred = Credentials.from_service_account_info(config_credencial(),
                                                  scopes=escopos)
-    return gspread.authorize(cred).open_by_key(config_planilha()["id"])
+    return gspread.authorize(cred)
+
+
+def planilhas_acessiveis() -> list:
+    """Planilhas que a conta de serviço enxerga. Útil no diagnóstico."""
+    try:
+        return _cliente_gspread().list_spreadsheet_files()
+    except Exception:
+        return []
+
+
+@st.cache_resource(show_spinner=False)
+def _planilha():
+    """Abre a planilha pelo ID. Se o ID falhar (erro de digitação, por
+    exemplo), tenta pelo nome entre as planilhas compartilhadas."""
+    cliente = _cliente_gspread()
+    config = config_planilha()
+
+    id_planilha = str(config.get("id", "")).strip()
+    if id_planilha:
+        try:
+            return cliente.open_by_key(id_planilha)
+        except Exception:
+            pass
+
+    nome = str(config.get("nome", "")).strip()
+    if nome:
+        try:
+            return cliente.open(nome)
+        except Exception:
+            pass
+
+    # Última tentativa: se a conta enxerga só uma planilha, usa ela.
+    arquivos = cliente.list_spreadsheet_files()
+    if len(arquivos) == 1:
+        return cliente.open_by_key(arquivos[0]["id"])
+
+    disponiveis = ", ".join(f"{a['name']} ({a['id']})" for a in arquivos) \
+        or "nenhuma"
+    raise RuntimeError(
+        "Não foi possível abrir a planilha. A conta de serviço "
+        f"{config_credencial().get('client_email')} enxerga: {disponiveis}. "
+        "Confira o ID configurado ou compartilhe a planilha correta.")
 
 
 def _aba(nome: str, criar=False, colunas=None):
@@ -1241,6 +1283,16 @@ def diagnostico():
                     f"Aba {rotulo}: {'encontrada' if achou else 'não encontrada'}")
         except Exception as e:
             st.error(f"Falhou ao conectar: {e}")
+            arquivos = planilhas_acessiveis()
+            if arquivos:
+                st.write("Planilhas que a conta de serviço enxerga:")
+                st.dataframe(pd.DataFrame(
+                    [{"Nome": a["name"], "ID": a["id"]} for a in arquivos]),
+                    use_container_width=True, hide_index=True)
+                st.caption("Copie o ID correto acima e ajuste a configuração.")
+            else:
+                st.warning("A conta de serviço não enxerga nenhuma planilha. "
+                           "Confirme o compartilhamento como Editor.")
             st.caption("Erro de permissão costuma significar que a planilha "
                        "não foi compartilhada com a conta de serviço. "
                        "Erro de chave inválida costuma ser a private_key "
