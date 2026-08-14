@@ -641,6 +641,50 @@ def _aba_ocorrencias():
     return ws
 
 
+def conferir_cabecalho() -> dict:
+    """Compara o cabeçalho da aba com as colunas que o app usa hoje.
+
+    Quando não batem, as linhas gravadas caem sob títulos errados (o valor
+    do entregador aparece em separador, por exemplo).
+    """
+    if not usando_sheets():
+        return {"ok": True, "atual": COLUNAS, "linhas": 0}
+    ws = _aba_ocorrencias()
+    atual = [c.strip() for c in ws.row_values(1)]
+    linhas = max(len(ws.col_values(1)) - 1, 0)
+    return {"ok": atual == COLUNAS, "atual": atual, "linhas": linhas,
+            "faltando": [c for c in COLUNAS if c not in atual],
+            "sobrando": [c for c in atual if c not in COLUNAS]}
+
+
+def corrigir_cabecalho(realinhar: bool) -> str:
+    """Regrava o cabeçalho na ordem correta.
+
+    realinhar=True  -> tenta reaproveitar as linhas existentes, casando pelos
+                       títulos antigos (só funciona para linhas gravadas
+                       enquanto aquele cabeçalho valia).
+    realinhar=False -> apaga os registros e deixa a aba limpa e correta.
+    """
+    ws = _aba_ocorrencias()
+    valores = ws.get_all_values()
+    antigo = _tabela(valores) if len(valores) > 1 else pd.DataFrame()
+
+    ws.clear()
+    ws.resize(rows=max(len(antigo) + 100, 200), cols=len(COLUNAS))
+
+    if realinhar and not antigo.empty:
+        alinhado = antigo.reindex(columns=COLUNAS, fill_value="")
+        linhas = [COLUNAS] + alinhado.fillna("").astype(str).values.tolist()
+        ws.update(values=linhas, range_name="A1")
+        resultado = f"Cabeçalho corrigido e {len(alinhado)} linha(s) realinhadas."
+    else:
+        ws.update(values=[COLUNAS], range_name="A1")
+        resultado = "Cabeçalho recriado. A aba está vazia."
+
+    carregar_ocorrencias.clear()
+    return resultado
+
+
 @st.cache_data(ttl=60, show_spinner=False)
 def carregar_ocorrencias() -> pd.DataFrame:
     if usando_sheets():
@@ -677,7 +721,17 @@ def gravar_ocorrencia(registro: dict) -> str:
     linha = [str(registro.get(c, "") or "") for c in COLUNAS]
 
     if usando_sheets():
-        _aba_ocorrencias().append_row(linha, value_input_option="USER_ENTERED")
+        ws = _aba_ocorrencias()
+        atual = [c.strip() for c in ws.row_values(1)]
+        if atual != COLUNAS:
+            if len(ws.col_values(1)) <= 1:      # aba sem registros: só corrigir
+                ws.update(values=[COLUNAS], range_name="A1")
+            else:
+                raise RuntimeError(
+                    "O cabeçalho da aba de ocorrências está diferente das "
+                    "colunas do sistema. Gravar agora bagunçaria os dados. "
+                    "Abra Diagnóstico e use \"Corrigir estrutura da aba\".")
+        ws.append_row(linha, value_input_option="USER_ENTERED")
     else:
         ARQ_OCORRENCIAS.parent.mkdir(parents=True, exist_ok=True)
         existe = ARQ_OCORRENCIAS.exists()
@@ -1417,6 +1471,45 @@ def diagnostico():
                      "conter os \\n do arquivo JSON.")
         else:
             st.success("Formato da private_key parece correto.")
+
+    st.divider()
+    st.markdown("##### Estrutura da aba de ocorrências")
+    if usando_sheets():
+        try:
+            info = conferir_cabecalho()
+            if info["ok"]:
+                st.success(f"Cabeçalho correto · {info['linhas']} registro(s).")
+            else:
+                st.error("O cabeçalho da aba está diferente das colunas do "
+                         "sistema. É isso que faz os valores aparecerem em "
+                         "campos trocados.")
+                c1, c2 = st.columns(2)
+                if info.get("faltando"):
+                    c1.write("Faltando na aba:")
+                    c1.code("\n".join(info["faltando"]))
+                if info.get("sobrando"):
+                    c2.write("Sobrando na aba:")
+                    c2.code("\n".join(info["sobrando"]))
+                st.write(f"Registros na aba: **{info['linhas']}**")
+
+                escolha = st.radio(
+                    "Como corrigir?",
+                    ["Limpar a aba e recriar o cabeçalho (recomendado se os "
+                     "registros são de teste)",
+                     "Manter os registros e tentar realinhar pelos títulos "
+                     "antigos"])
+                st.caption("O realinhamento só acerta as linhas que foram "
+                           "gravadas enquanto o cabeçalho antigo valia. "
+                           "Linhas gravadas depois da mudança podem continuar "
+                           "deslocadas — confira uma a uma depois.")
+                if st.button("Corrigir estrutura da aba", type="primary"):
+                    st.success(corrigir_cabecalho(
+                        realinhar=escolha.startswith("Manter")))
+                    st.rerun()
+        except Exception as e:
+            st.warning(f"Não foi possível conferir a aba: {e}")
+    else:
+        st.caption("Disponível apenas com o Google Sheets configurado.")
 
     st.divider()
     if st.button("Testar conexão com a planilha", type="primary"):
