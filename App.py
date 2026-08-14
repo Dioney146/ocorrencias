@@ -579,8 +579,9 @@ def pagina_registrar(usuario: dict):
 
     if not usando_sheets():
         st.error("O Google Sheets não está configurado, então o app não "
-                 "consegue ler a aba Diario. Configure os blocos [planilha] e "
-                 "[gcp_service_account] no secrets.")
+                 "consegue ler a aba Diario.")
+        st.info("Abra **Diagnóstico** na barra lateral para ver exatamente o "
+                "que está faltando no secrets.")
         return
 
     pes = base_pessoas()
@@ -1080,6 +1081,86 @@ st.markdown("""<style>
 </style>""", unsafe_allow_html=True)
 
 
+def diagnostico():
+    """Mostra o que o app está enxergando no secrets, sem revelar valores."""
+    st.markdown("##### Diagnóstico da configuração")
+
+    try:
+        chaves = list(st.secrets.keys())
+    except Exception as e:
+        st.error(f"Não foi possível ler o secrets: {e}")
+        return
+
+    st.write("Blocos encontrados no secrets:")
+    st.code("\n".join(chaves) if chaves else "(nenhum)")
+
+    for bloco in ("planilha", "gcp_service_account"):
+        if bloco in chaves:
+            st.success(f"Bloco [{bloco}] encontrado.")
+        else:
+            st.error(f"Bloco [{bloco}] NÃO encontrado.")
+
+    if "planilha" in chaves:
+        id_planilha = str(st.secrets["planilha"].get("id", ""))
+        if not id_planilha or "COLE" in id_planilha.upper():
+            st.error("O campo id da planilha ainda está com o texto de exemplo.")
+        else:
+            st.write(f"ID da planilha: `{id_planilha[:6]}...{id_planilha[-4:]}` "
+                     f"({len(id_planilha)} caracteres)")
+
+    if "gcp_service_account" in chaves:
+        conta = dict(st.secrets["gcp_service_account"])
+        obrigatorios = ["type", "project_id", "private_key", "client_email",
+                        "token_uri"]
+        faltando = [c for c in obrigatorios if not str(conta.get(c, "")).strip()]
+        if faltando:
+            st.error("Campos faltando: " + ", ".join(faltando))
+
+        email = str(conta.get("client_email", ""))
+        if email:
+            st.write(f"Conta de serviço: `{email}`")
+            st.caption("Esta conta precisa estar como **Editor** na planilha.")
+
+        chave = str(conta.get("private_key", ""))
+        if "COPIE" in chave.upper():
+            st.error("A private_key ainda está com o texto de exemplo.")
+        elif "BEGIN PRIVATE KEY" not in chave:
+            st.error("A private_key não parece válida (falta o cabeçalho "
+                     "BEGIN PRIVATE KEY).")
+        elif "\n" not in chave:
+            st.error("A private_key está sem quebras de linha. Ela precisa "
+                     "conter os \\n do arquivo JSON.")
+        else:
+            st.success("Formato da private_key parece correto.")
+
+    st.divider()
+    if st.button("Testar conexão com a planilha", type="primary"):
+        if not usando_sheets():
+            st.error("O app não reconhece os dois blocos. Corrija os itens "
+                     "acima antes de testar.")
+            return
+        try:
+            planilha = _planilha()
+            abas = [ws.title for ws in planilha.worksheets()]
+            st.success(f"Conectado à planilha **{planilha.title}**.")
+            st.write("Abas encontradas:")
+            st.code("\n".join(abas))
+            esperadas = {"Diario": ABA_DIARIO, "Produtos": ABA_PRODUTOS,
+                         "Pessoas": ABA_PESSOAS, "Motivos": ABA_MOTIVOS}
+            minusculas = {a.strip().lower() for a in abas}
+            for rotulo, nome in esperadas.items():
+                achou = any(alt.strip().lower() in minusculas
+                            for alt in ALTERNATIVAS.get(nome, [nome]))
+                (st.success if achou else st.warning)(
+                    f"Aba {rotulo}: {'encontrada' if achou else 'não encontrada'}")
+        except Exception as e:
+            st.error(f"Falhou ao conectar: {e}")
+            st.caption("Erro de permissão costuma significar que a planilha "
+                       "não foi compartilhada com a conta de serviço. "
+                       "Erro de chave inválida costuma ser a private_key "
+                       "colada errado.")
+
+
 def main():
     usuario = tela_login()
     if not usuario:
@@ -1092,7 +1173,7 @@ def main():
         st.divider()
         opcoes = ["Registrar", "Consultar", "Painel"]
         if pode_editar(usuario):
-            opcoes.append("Bases")
+            opcoes += ["Bases", "Diagnóstico"]
         pagina = st.radio("Navegação", opcoes, label_visibility="collapsed")
         st.divider()
         st.caption(f"Armazenamento: {nome_backend()}")
@@ -1106,8 +1187,11 @@ def main():
             st.session_state.pop("usuario", None)
             st.rerun()
 
-    {"Registrar": pagina_registrar, "Consultar": pagina_consultar,
-     "Painel": pagina_painel, "Bases": pagina_bases}[pagina](usuario)
+    if pagina == "Diagnóstico":
+        diagnostico()
+    else:
+        {"Registrar": pagina_registrar, "Consultar": pagina_consultar,
+         "Painel": pagina_painel, "Bases": pagina_bases}[pagina](usuario)
 
 
 if __name__ == "__main__":
