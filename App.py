@@ -186,11 +186,97 @@ def eh_admin(u: dict) -> bool:
 # ==========================================================================
 # GOOGLE SHEETS
 # ==========================================================================
-def usando_sheets() -> bool:
+# ATENÇÃO: as credenciais abaixo estão embutidas no código como alternativa
+# ao secrets. Qualquer pessoa com acesso a este repositório consegue ler e
+# escrever na planilha. Mantenha o repositório PRIVADO e, assim que puder,
+# mova estes dados para Settings -> Secrets no Streamlit Cloud e apague este
+# bloco (o secrets sempre tem prioridade sobre o que está aqui).
+PRIVATE_KEY_EMBUTIDA = (
+    "-----BEGIN PRIVATE KEY-----\n"
+    "MIIEugIBADANBgkqhkiG9w0BAQEFAASCBKQwggSgAgEAAoIBAQDg4YC1o+O1EuAU\n"
+    "QwW4e83XAd0X5ODVdyY5MKw2/W9mehYk3mHP8+PB9t4wSH+hVPiJ3Ko6UeHRZzhE\n"
+    "CItlZys12P8dnRUuK3ipErKwnhm0oPZCPLFmaY2NrcK8+ZdomcCMJMtWbc4xb6SG\n"
+    "CHkLQ+kYSdKCtvHr+XxI+zFRkW9n5yqRqNHkAMIug6wU7vXJ8iHYcfozlz846yi2\n"
+    "Zd1B0mkOWTiXjhySn6ydjOOKVO0cu0VG8mCP5FBVCsjXNZJQ4V11ca1wAG/K+bbp\n"
+    "OinJbL0TKYp/PT3A9Sk/3ia5RarpfyfKHkdDOD+9p6xP2BMWef1kEYHjWv+bI5ka\n"
+    "JF4QPBjlAgMBAAECggEABi4YwrNeRHiZKDcriLAZbla5t5T/YlkXaW9/YlHvd/lT\n"
+    "8z3EogtyiE0+5SgEdCGFZJiEecPv+PFshkKPaM9jMACYXyCxggpekwWVlMnEZWod\n"
+    "5tmLl6QxvaGiHiUO7294C8kHTGqYN40HZZ9aiucaCjJWgRJYIDingJIrjU4IRlxH\n"
+    "8HDpyrp0OQFSPhFvmasV5k84HNJGU3+/KxE+vJlOX0PL/8jPEWtxxZof1XMauwMn\n"
+    "T4HGJL9d2OvngZc2ah9A/PQ7du6XAR7gSe15Dex/hA8udMruCRLXv8NQkPblbXXT\n"
+    "v8MBqoiLEcqB9deKO0TArBVMTo7sy8PuCvB/xyxyMQKBgQD9mmgql9kBZnpPOpNQ\n"
+    "/Z6IRuzJL5se2VNrGzCOyK0LflgQfwS9pgXzEcDVz3XKMkBZMsD0fu4YOJX9dwwx\n"
+    "mTJWZ5X2Qw3OnCwqrfwdwN9zUF2b0/Ep3FAfKl4u0epp9B619EFnPu0f1AsnOudW\n"
+    "0ofEdsOa162V/guUY9Vt6N3SbQKBgQDjAZovBR0zxw0YHOqyyLUKzgvxOpsci0xH\n"
+    "1szo4cUWGJd8ea0jwxAFMF6BWXO9nA9G9DEf1lgHYTc2ET5TpgDB7eal6fgMPyRm\n"
+    "TOK7tUJLdVuwEYr1h7wZV0sPzHVDxDMw6aWd8reqJn28GFoGs8vCL3VYjFHRHnSa\n"
+    "DjUX22cVWQJ/NIDDEA5f3upYaA64cQwQxiXo3737X2ee3Y3Df8wMB1Ug5kllsd2t\n"
+    "XaVPRvSsbi/5In5fdD7TDDCq3M7It3v/7+OCKHm5YgzzF+LtTzufB0CcIKbARupV\n"
+    "rB4ZYZgT79uagBEReU6NyQkdRgHr4w2zDfmIhYYhaewueYoxpY+QXQKBgGq5Bx7R\n"
+    "/a+pBjvu5FxXRd4ljrHDhsb9qkgf8UgPVJQVzapkngSxISf/XH7dai+bXgdSqIG6\n"
+    "SLp3dviBVNcItVR3Hzejbs17Jga+YN400k0diJSXOshCHymew5hS3FKWvCZjwkwm\n"
+    "nzhsTjKPFEwQXVwW6clOduykr9b5lPZ5XNZJAoGAM9T9Z+26l+ame845iyQIyrCd\n"
+    "0AQMC/TMQl2KQmbELduDMnBNHcTh5xT+NsVYTDyXlzGrlHj0Rk6XWqVqBeCC6e6n\n"
+    "UXLqkJd53sMrqEZuiB+Q0whnZFqDEGXyhbdE9cTG4t80uM+wIFVRteraaO1Jx4i4\n"
+    "g0EQMURaz5C5Ph3a+EM=\n"
+    "-----END PRIVATE KEY-----\n"
+)
+
+
+PLANILHA_EMBUTIDA = {
+    "id": "1h1DUP8oPbdHvUwSY0_53sxL12JmccIi_eHRmBGb_Qno",
+    "aba": "ocorrencias",
+}
+
+CREDENCIAL_EMBUTIDA = {
+    "type": "service_account",
+    "project_id": "macro-climber-505415-c4",
+    "private_key_id": "38e6ff81e45e705d07c2fa676e581cf8e37849e7",
+    "private_key": PRIVATE_KEY_EMBUTIDA,
+    "client_email": "ocorrencias-app@macro-climber-505415-c4.iam.gserviceaccount.com",
+    "client_id": "116742510487871805707",
+    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+    "token_uri": "https://oauth2.googleapis.com/token",
+    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+    "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/"
+                            "ocorrencias-app%40macro-climber-505415-c4."
+                            "iam.gserviceaccount.com",
+}
+
+
+def config_planilha() -> dict:
+    """Configuração da planilha: o secrets tem prioridade; se não houver,
+    usa o que está embutido no código."""
     try:
-        return "gcp_service_account" in st.secrets and "planilha" in st.secrets
+        if "planilha" in st.secrets:
+            return dict(st.secrets["planilha"])
     except Exception:
-        return False
+        pass
+    return PLANILHA_EMBUTIDA
+
+
+def config_credencial() -> dict:
+    try:
+        if "gcp_service_account" in st.secrets:
+            return dict(st.secrets["gcp_service_account"])
+    except Exception:
+        pass
+    return CREDENCIAL_EMBUTIDA
+
+
+def origem_credencial() -> str:
+    try:
+        if "gcp_service_account" in st.secrets:
+            return "secrets"
+    except Exception:
+        pass
+    return "código"
+
+
+def usando_sheets() -> bool:
+    cred = config_credencial()
+    return bool(config_planilha().get("id") and cred.get("private_key")
+                and cred.get("client_email"))
 
 
 def nome_backend() -> str:
@@ -204,9 +290,9 @@ def _planilha():
 
     escopos = ["https://www.googleapis.com/auth/spreadsheets",
                "https://www.googleapis.com/auth/drive"]
-    cred = Credentials.from_service_account_info(
-        dict(st.secrets["gcp_service_account"]), scopes=escopos)
-    return gspread.authorize(cred).open_by_key(st.secrets["planilha"]["id"])
+    cred = Credentials.from_service_account_info(config_credencial(),
+                                                 scopes=escopos)
+    return gspread.authorize(cred).open_by_key(config_planilha()["id"])
 
 
 def _aba(nome: str, criar=False, colunas=None):
@@ -477,7 +563,7 @@ def mes_ano(d) -> str:
 # OCORRÊNCIAS
 # ==========================================================================
 def _aba_ocorrencias():
-    nome = st.secrets["planilha"].get("aba", ABA_OCORRENCIAS)
+    nome = config_planilha().get("aba", ABA_OCORRENCIAS)
     planilha = _planilha()
     existentes = {ws.title.strip().lower(): ws for ws in planilha.worksheets()}
     ws = existentes.get(nome.strip().lower())
@@ -1094,22 +1180,22 @@ def diagnostico():
     st.write("Blocos encontrados no secrets:")
     st.code("\n".join(chaves) if chaves else "(nenhum)")
 
-    for bloco in ("planilha", "gcp_service_account"):
-        if bloco in chaves:
-            st.success(f"Bloco [{bloco}] encontrado.")
-        else:
-            st.error(f"Bloco [{bloco}] NÃO encontrado.")
+    if origem_credencial() == "secrets":
+        st.success("Credenciais vindas do secrets do Streamlit.")
+    else:
+        st.warning("Credenciais embutidas no código (app.py). Funciona, mas "
+                   "só é seguro com o repositório privado. Mova para o "
+                   "secrets quando puder.", icon="⚠️")
 
-    if "planilha" in chaves:
-        id_planilha = str(st.secrets["planilha"].get("id", ""))
-        if not id_planilha or "COLE" in id_planilha.upper():
-            st.error("O campo id da planilha ainda está com o texto de exemplo.")
-        else:
-            st.write(f"ID da planilha: `{id_planilha[:6]}...{id_planilha[-4:]}` "
-                     f"({len(id_planilha)} caracteres)")
+    id_planilha = str(config_planilha().get("id", ""))
+    if not id_planilha:
+        st.error("Nenhum ID de planilha configurado.")
+    else:
+        st.write(f"ID da planilha: `{id_planilha[:6]}...{id_planilha[-4:]}` "
+                 f"({len(id_planilha)} caracteres)")
 
-    if "gcp_service_account" in chaves:
-        conta = dict(st.secrets["gcp_service_account"])
+    conta = config_credencial()
+    if conta:
         obrigatorios = ["type", "project_id", "private_key", "client_email",
                         "token_uri"]
         faltando = [c for c in obrigatorios if not str(conta.get(c, "")).strip()]
