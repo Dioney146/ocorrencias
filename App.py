@@ -58,27 +58,35 @@ ALTERNATIVAS = {
 
 # --------------------------------------------- colunas esperadas no Diario
 # (chave interna -> possíveis nomes na planilha, em maiúsculas)
+# Aceita tanto o layout antigo do Diario quanto o export novo (base.xls).
 CAMPOS_DIARIO = {
-    "nota_fiscal": ["NOTA FISCAL", "NOTAFISCAL", "NF"],
-    "pedido": ["PEDIDO"],
-    "carregamento": ["CARREGAMENTO"],
-    "codigo_cliente": ["CODIGO CLIENTE", "COD CLIENTE"],
-    "cliente": ["NOME CLIENTE", "CLIENTE"],
+    "nota_fiscal": ["NUMNOTA", "NOTA FISCAL", "NOTAFISCAL", "NF"],
+    "pedido": ["NUMPED", "PEDIDO"],
+    "carregamento": ["NUMCARREGAMENTO", "CARREGAMENTO"],
+    "filial": ["CODFILIAL", "FILIAL"],
+    "codigo_cliente": ["CODCLI", "CODIGO CLIENTE", "COD CLIENTE"],
+    "cliente": ["NOMECLIENTE", "NOME CLIENTE", "CLIENTE"],
     "posicao": ["POSICAO", "POSIÇÃO"],
     "data_faturamento": ["DATA"],
     "data_entrega": ["DTENTREGA", "DT ENTREGA", "DATA ENTREGA"],
-    "vendedor": ["VENDEDOR"],
-    "supervisor": ["SUPERVISOR"],
-    "codigo": ["CODIGO PRODUTO", "CODPROD", "CODIGO"],
-    "produto": ["PRODUTO", "DESCRICAO"],
+    "vendedor": ["NOMERCA", "VENDEDOR"],
+    "supervisor": ["NOMESUP", "SUPERVISOR"],
+    "codigo": ["CODPROD", "CODIGO PRODUTO", "CODIGO"],
+    "produto": ["DESCRICAO", "PRODUTO"],
     "qt_nota": ["QT", "QTD", "QUANTIDADE"],
-    "peso": ["PESO"],
+    "peso": ["PESOBRUTOTOT", "PESO"],
     "cidade": ["CIDADE"],
-    "valor_total": ["VALOR TOTAL", "VALORTOTAL"],
+    "valor_total": ["VLTOTAL", "VALOR TOTAL", "VALORTOTAL"],
     "praca": ["PRACA", "PRAÇA"],
+    "destino": ["DESTINO"],
+    "placa": ["PLACA"],
     "plano_pagamento": ["PLANOPAG", "PLANO PAGAMENTO"],
     "subcategoria": ["NOME_SUBCATEGORIA", "SUBCATEGORIA"],
 }
+
+# Campos do Diario que, se faltarem, não impedem o funcionamento
+CAMPOS_DIARIO_OPCIONAIS = {"posicao", "plano_pagamento", "subcategoria",
+                           "destino", "filial", "placa", "praca"}
 
 COLS_PRODUTOS = ["CODPROD", "DESCRICAO", "EMBALAGEMMASTER", "QTUNITCX", "CUSTO"]
 COLS_PESSOAS = ["CONFERENTE", "SEPARADOR", "ENTREGADOR"]
@@ -93,8 +101,8 @@ MESES_PT = {1: "JAN", 2: "FEV", 3: "MAR", 4: "ABR", 5: "MAI", 6: "JUN",
 # ------------------------------------------ colunas do registro gerado
 COLUNAS = [
     "id", "criado_em", "mes", "data",
-    "nota_fiscal", "pedido", "carregamento", "codigo_cliente", "cliente",
-    "cidade", "praca", "vendedor", "supervisor",
+    "nota_fiscal", "pedido", "carregamento", "filial", "codigo_cliente",
+    "cliente", "cidade", "praca", "destino", "vendedor", "supervisor",
     "data_faturamento", "data_entrega",
     "codigo", "produto", "embalagem", "qt_nota", "peso", "valor_total",
     "quantidade", "valor_unitario", "valor_financeiro",
@@ -107,8 +115,9 @@ COLUNAS = [
 ROTULOS = {
     "id": "ID", "criado_em": "Criado em", "mes": "Mês/Ano", "data": "Data",
     "nota_fiscal": "Nota Fiscal", "pedido": "Pedido",
-    "carregamento": "Carregamento", "codigo_cliente": "Cód. Cliente",
-    "cliente": "Cliente", "cidade": "Cidade", "praca": "Praça",
+    "carregamento": "Carregamento", "filial": "Filial",
+    "codigo_cliente": "Cód. Cliente", "cliente": "Cliente",
+    "cidade": "Cidade", "praca": "Praça", "destino": "Destino",
     "vendedor": "Vendedor", "supervisor": "Supervisor",
     "data_faturamento": "Faturamento", "data_entrega": "Entrega",
     "codigo": "Código", "produto": "Produto", "embalagem": "Embalagem",
@@ -451,6 +460,17 @@ def _diario_coluna_nf() -> list:
     return [str(v).strip() for v in ws.col_values(estrutura["col_nf"] + 1)]
 
 
+def numero(serie) -> pd.Series:
+    """Converte texto em número aceitando os dois formatos do Sheets:
+    1.234,56 (pt-BR) e 1234.56 (padrão americano)."""
+    texto = pd.Series(serie).astype(str).str.strip()
+    tem_virgula = texto.str.contains(",", regex=False)
+    # Com vírgula: o ponto é separador de milhar e a vírgula é decimal.
+    ptbr = texto.str.replace(".", "", regex=False).str.replace(",", ".",
+                                                              regex=False)
+    return pd.to_numeric(texto.where(~tem_virgula, ptbr), errors="coerce")
+
+
 def buscar_nota(nota_fiscal: str) -> pd.DataFrame:
     """Devolve todos os itens da nota fiscal, lidos da aba Diario."""
     nf = str(nota_fiscal).strip()
@@ -485,9 +505,7 @@ def buscar_nota(nota_fiscal: str) -> pd.DataFrame:
                                                                  regex=False) == nf]
     for c in ("qt_nota", "peso", "valor_total"):
         if c in df.columns:
-            df[c] = pd.to_numeric(
-                df[c].astype(str).str.replace(".", "", regex=False)
-                     .str.replace(",", ".", regex=False), errors="coerce")
+            df[c] = numero(df[c])
     return df.reset_index(drop=True)
 
 
@@ -516,9 +534,7 @@ def base_produtos() -> pd.DataFrame:
         ".0", "", regex=False)
     df["DESCRICAO"] = df["DESCRICAO"].fillna("").astype(str).str.strip()
     for c in ("QTUNITCX", "CUSTO"):
-        df[c] = pd.to_numeric(
-            df[c].astype(str).str.replace(",", ".", regex=False),
-            errors="coerce")
+        df[c] = numero(df[c])
     df["_origem"] = origem
     return df
 
@@ -763,6 +779,11 @@ def pagina_registrar(usuario: dict):
         c2.markdown(f"**Cidade / Praça**  \n{v('cidade')} · {v('praca')}")
         c3.markdown(f"**Vendedor**  \n{v('vendedor')}")
         c4.markdown(f"**Supervisor**  \n{v('supervisor')}")
+        if v("placa") or v("destino") or v("filial"):
+            c1, c2, c3, c4 = st.columns(4)
+            c1.markdown(f"**Placa**  \n{v('placa') or '-'}")
+            c2.markdown(f"**Destino**  \n{v('destino') or '-'}")
+            c3.markdown(f"**Filial**  \n{v('filial') or '-'}")
 
     # ----------------------------------------------------- 2. produto da NF
     st.markdown("##### Produto da nota")
@@ -781,19 +802,27 @@ def pagina_registrar(usuario: dict):
     unitario_nota = (valor_total / qt_nota) if qt_nota else 0.0
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Qtd na nota", f"{qt_nota:,.0f}".replace(",", "."))
+    c1.metric("Qtd na nota", f"{qt_nota:,.0f}".replace(",", ".")
+              if qt_nota else "não informada")
     c2.metric("Peso", f"{peso:,.3f}".replace(",", "X").replace(".", ",")
               .replace("X", "."))
     c3.metric("Valor do item", f"R$ {valor_total:,.2f}")
-    c4.metric("Valor unitário", f"R$ {unitario_nota:,.2f}")
+    c4.metric("Valor unitário",
+              f"R$ {unitario_nota:,.2f}" if unitario_nota else "informe abaixo")
+    if not qt_nota:
+        st.caption("O Diario não trouxe a quantidade deste item, então o valor "
+                   "unitário não pôde ser calculado. Confira o valor unitário "
+                   "abaixo antes de finalizar.")
 
     # --------------------------------------------------- 3. dados da ocorrência
     st.divider()
     st.markdown("##### Dados da ocorrência")
 
     c1, c2, c3 = st.columns(3)
-    quantidade = c1.number_input("Quantidade da ocorrência", min_value=0.0,
-                                 step=1.0, value=1.0)
+    quantidade = c1.number_input(
+        "Quantidade da ocorrência", min_value=0.0, step=1.0, value=1.0,
+        help=f"A nota traz {qt_nota:g} unidade(s) deste item."
+             if qt_nota else "Quantidade afetada pela ocorrência.")
     opcoes_emb = EMBALAGENS_LIVRES.copy()
     emb_cad = cadastro.get("embalagem", "")
     if emb_cad and emb_cad not in opcoes_emb:
@@ -805,6 +834,11 @@ def pagina_registrar(usuario: dict):
 
     valor_financeiro = quantidade * unitario
 
+    if qt_nota and quantidade > qt_nota:
+        st.warning(f"A quantidade informada ({quantidade:g}) é maior que a "
+                   f"faturada na nota ({qt_nota:g}). Confira antes de "
+                   f"finalizar.", icon="⚠️")
+
     c1, c2, c3 = st.columns([2, 1, 1])
     motivo = c1.selectbox("Motivo", lista_motivos)
     setor = setor_do_motivo(motivo)
@@ -813,7 +847,7 @@ def pagina_registrar(usuario: dict):
 
     c1, c2, c3 = st.columns([2, 1, 1])
     entregador = c1.selectbox("Entregador", [""] + list(pes["entregadores"]))
-    placa = c2.text_input("Placa (opcional)").upper()
+    placa = c2.text_input("Placa", value=v("placa")).upper()
     data_oc = c3.date_input("Data da ocorrência", value=date.today())
 
     obs = st.text_area("Observações", height=80,
@@ -835,8 +869,9 @@ def pagina_registrar(usuario: dict):
             "mes": mes_ano(data_oc), "data": data_oc.strftime("%Y-%m-%d"),
             "nota_fiscal": st.session_state["nf"].strip(),
             "pedido": v("pedido"), "carregamento": v("carregamento"),
-            "codigo_cliente": v("codigo_cliente"), "cliente": v("cliente"),
-            "cidade": v("cidade"), "praca": v("praca"),
+            "filial": v("filial"), "codigo_cliente": v("codigo_cliente"),
+            "cliente": v("cliente"), "cidade": v("cidade"),
+            "praca": v("praca"), "destino": v("destino"),
             "vendedor": v("vendedor"), "supervisor": v("supervisor"),
             "data_faturamento": v("data_faturamento"),
             "data_entrega": v("data_entrega"),
@@ -915,8 +950,9 @@ def pagina_analise(usuario: dict):
         c1, c2, c3, c4 = st.columns(4)
         c1.markdown(f"**Produto**  \n{oc['codigo']} · {oc['produto']}")
         c2.markdown(f"**Motivo**  \n{oc['motivo']} ({oc['setor']})")
-        c3.markdown(f"**Quantidade**  \n{oc['quantidade']:g} de "
-                    f"{oc['qt_nota']:g} na NF")
+        c3.markdown(f"**Quantidade**  \n{oc['quantidade']:g}"
+                    + (f" de {oc['qt_nota']:g} na NF"
+                       if pd.notna(oc["qt_nota"]) and oc["qt_nota"] else ""))
         c4.markdown(f"**Valor**  \nR$ {oc['valor_financeiro']:,.2f}")
         if str(oc["obs"]).strip():
             st.markdown(f"**Observação de quem registrou:** {oc['obs']}")
@@ -1210,14 +1246,21 @@ def pagina_bases(usuario: dict):
             st.error("Aba Diario não encontrada na planilha.")
         else:
             encontrados = list(estrutura["posicao"])
-            faltando = [c for c in CAMPOS_DIARIO if c not in encontrados]
+            faltando = [c for c in CAMPOS_DIARIO
+                        if c not in encontrados
+                        and c not in CAMPOS_DIARIO_OPCIONAIS]
+            opcionais = [c for c in CAMPOS_DIARIO_OPCIONAIS
+                         if c not in encontrados]
             c1, c2 = st.columns(2)
             c1.metric("Colunas reconhecidas", len(encontrados))
             c2.metric("Linhas no Diario", f"{max(len(_diario_coluna_nf()) - 1, 0):,}"
                       .replace(",", "."))
             if faltando:
-                st.warning("Colunas não localizadas (ficam em branco no "
-                           "registro): " + ", ".join(faltando))
+                st.error("Colunas essenciais não localizadas: "
+                         + ", ".join(faltando))
+            if opcionais:
+                st.info("Colunas opcionais ausentes (ficam em branco): "
+                        + ", ".join(opcionais))
             st.caption("Cabeçalho lido: " + ", ".join(estrutura["cabecalho"]))
         st.caption("O Diario é atualizado direto na planilha, pelo export do "
                    "ERP. O app lê sempre a versão mais recente — use "
