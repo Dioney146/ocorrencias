@@ -100,7 +100,8 @@ COLUNAS = [
     "quantidade", "valor_unitario", "valor_financeiro",
     "motivo", "setor", "entregador", "placa", "separador", "conferente",
     "erro_separador", "bipado",
-    "responsavel_registro", "responsavel_analise", "obs",
+    "responsavel_registro", "obs",
+    "status", "responsavel_analise", "validado_em", "parecer",
 ]
 
 ROTULOS = {
@@ -118,8 +119,15 @@ ROTULOS = {
     "separador": "Separador", "conferente": "Conferente",
     "erro_separador": "Erro do Separador", "bipado": "Bipado",
     "responsavel_registro": "Responsável pelo Registro",
-    "responsavel_analise": "Responsável / Análise", "obs": "OBS",
+    "responsavel_analise": "Analisado por", "obs": "OBS",
+    "status": "Status", "validado_em": "Analisado em",
+    "parecer": "Parecer da análise",
 }
+
+STATUS_PENDENTE = "PENDENTE"
+STATUS_VALIDADA = "VALIDADA"
+STATUS_RECUSADA = "RECUSADA"
+STATUS_TODOS = [STATUS_PENDENTE, STATUS_VALIDADA, STATUS_RECUSADA]
 
 EMBALAGENS_LIVRES = ["UNIDADE", "CAIXA", "FARDO", "SACO", "PACOTE", "BANDEJA",
                      "VOLUME"]
@@ -634,7 +642,14 @@ def carregar_ocorrencias() -> pd.DataFrame:
     for c in ("quantidade", "qt_nota", "peso", "valor_total",
               "valor_unitario", "valor_financeiro"):
         df[c] = pd.to_numeric(df[c], errors="coerce")
+    df["status"] = df["status"].replace("", STATUS_PENDENTE).fillna(
+        STATUS_PENDENTE)
     return df
+
+
+def pendentes() -> pd.DataFrame:
+    df = carregar_ocorrencias()
+    return df[df["status"] == STATUS_PENDENTE]
 
 
 def gravar_ocorrencia(registro: dict) -> str:
@@ -796,24 +811,16 @@ def pagina_registrar(usuario: dict):
     c2.text_input("Setor", value=setor, disabled=True)
     c3.metric("Valor financeiro", f"R$ {valor_financeiro:,.2f}")
 
-    c1, c2 = st.columns([2, 1])
+    c1, c2, c3 = st.columns([2, 1, 1])
     entregador = c1.selectbox("Entregador", [""] + list(pes["entregadores"]))
     placa = c2.text_input("Placa (opcional)").upper()
-
-    c1, c2, c3 = st.columns(3)
-    separador = c1.selectbox("Separador", [""] + list(pes["separadores"]))
-    conferente = c2.selectbox("Conferente", [""] + list(pes["conferentes"]))
-    responsavel_analise = c3.text_input("Responsável pela análise")
-
-    c1, c2, c3 = st.columns(3)
-    erro_separador = c1.radio("Erro do separador?", ["", "SIM", "NÃO"],
-                              horizontal=True)
-    bipado = c2.radio("Bipado?", ["", "SIM", "NÃO"], horizontal=True)
     data_oc = c3.date_input("Data da ocorrência", value=date.today())
 
-    obs = st.text_area("Observações", height=80)
+    obs = st.text_area("Observações", height=80,
+                       placeholder="Descreva o que aconteceu")
     st.caption(f"Registrado por **{usuario['nome']}** · "
-               f"Mês/Ano: **{mes_ano(data_oc)}**")
+               f"Mês/Ano: **{mes_ano(data_oc)}** · A ocorrência será enviada "
+               f"para análise com status {STATUS_PENDENTE}.")
 
     # ------------------------------------------------------------ 4. gravar
     if st.button("Finalizar registro", type="primary", use_container_width=True):
@@ -842,15 +849,141 @@ def pagina_registrar(usuario: dict):
             "valor_financeiro": round(valor_financeiro, 2),
             "motivo": motivo, "setor": setor,
             "entregador": entregador, "placa": placa,
-            "separador": separador, "conferente": conferente,
-            "erro_separador": erro_separador, "bipado": bipado,
+            "separador": "", "conferente": "",
+            "erro_separador": "", "bipado": "",
             "responsavel_registro": usuario["nome"],
-            "responsavel_analise": responsavel_analise.upper(),
             "obs": obs.strip(),
+            "status": STATUS_PENDENTE, "responsavel_analise": "",
+            "validado_em": "", "parecer": "",
         })
-        st.success(f"Ocorrência {novo_id} registrada com sucesso.")
+        st.success(f"Ocorrência {novo_id} registrada e enviada para análise.")
         for k in ("nf", "nota_itens"):
             st.session_state.pop(k, None)
+
+
+# ==========================================================================
+# PÁGINA: ANÁLISE DAS OCORRÊNCIAS
+# ==========================================================================
+def pagina_analise(usuario: dict):
+    st.subheader("Análise de ocorrências")
+    st.caption("Aqui o time de ocorrências confere o registro, aponta "
+               "separador e conferente, e valida ou recusa.")
+
+    df = carregar_ocorrencias()
+    if df.empty:
+        st.info("Nenhuma ocorrência registrada ainda.")
+        return
+
+    pes = base_pessoas()
+    contagem = df["status"].value_counts()
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Pendentes", int(contagem.get(STATUS_PENDENTE, 0)))
+    c2.metric("Validadas", int(contagem.get(STATUS_VALIDADA, 0)))
+    c3.metric("Recusadas", int(contagem.get(STATUS_RECUSADA, 0)))
+
+    filtro = st.radio("Mostrar", ["Somente pendentes"] + STATUS_TODOS
+                      + ["Todas"], horizontal=True)
+    fila = df if filtro == "Todas" else df[
+        df["status"] == (STATUS_PENDENTE if filtro == "Somente pendentes"
+                         else filtro)]
+    if fila.empty:
+        st.success("Nada nesta fila.")
+        return
+
+    fila = fila.sort_values("criado_em", ascending=False)
+    alvo = st.selectbox(
+        "Ocorrência", fila["id"].tolist(),
+        format_func=lambda i: (
+            f"{i} · NF {fila.loc[fila['id'] == i, 'nota_fiscal'].iloc[0]} · "
+            f"{str(fila.loc[fila['id'] == i, 'produto'].iloc[0])[:35]} · "
+            f"{fila.loc[fila['id'] == i, 'motivo'].iloc[0]}"))
+    oc = fila[fila["id"] == alvo].iloc[0]
+
+    # ------------------------------------------------ dados do registro
+    with st.container(border=True):
+        c1, c2, c3, c4 = st.columns(4)
+        c1.markdown(f"**Nota fiscal**  \n{oc['nota_fiscal']}")
+        c2.markdown(f"**Pedido**  \n{oc['pedido']}")
+        c3.markdown(f"**Carregamento**  \n{oc['carregamento']}")
+        c4.markdown(f"**Data**  \n{oc['data']:%d/%m/%Y}"
+                    if pd.notna(oc["data"]) else "**Data**  \n-")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.markdown(f"**Cliente**  \n{oc['cliente']}")
+        c2.markdown(f"**Vendedor**  \n{oc['vendedor']}")
+        c3.markdown(f"**Supervisor**  \n{oc['supervisor']}")
+        c4.markdown(f"**Entregador**  \n{oc['entregador']}")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.markdown(f"**Produto**  \n{oc['codigo']} · {oc['produto']}")
+        c2.markdown(f"**Motivo**  \n{oc['motivo']} ({oc['setor']})")
+        c3.markdown(f"**Quantidade**  \n{oc['quantidade']:g} de "
+                    f"{oc['qt_nota']:g} na NF")
+        c4.markdown(f"**Valor**  \nR$ {oc['valor_financeiro']:,.2f}")
+        if str(oc["obs"]).strip():
+            st.markdown(f"**Observação de quem registrou:** {oc['obs']}")
+        st.caption(f"Registrado por {oc['responsavel_registro']} em "
+                   f"{oc['criado_em']}")
+
+    if oc["status"] != STATUS_PENDENTE:
+        st.info(f"Status atual: **{oc['status']}** · analisada por "
+                f"{oc['responsavel_analise']} em {oc['validado_em']}")
+
+    # ---------------------------------------------------- formulário
+    st.markdown("##### Conferência")
+    with st.form("analise"):
+        c1, c2 = st.columns(2)
+        lista_sep = [""] + list(pes["separadores"])
+        atual_sep = str(oc["separador"] or "")
+        if atual_sep and atual_sep not in lista_sep:
+            lista_sep.insert(1, atual_sep)
+        separador = c1.selectbox("Separador", lista_sep,
+                                 index=lista_sep.index(atual_sep)
+                                 if atual_sep in lista_sep else 0)
+
+        lista_conf = [""] + list(pes["conferentes"])
+        atual_conf = str(oc["conferente"] or "")
+        if atual_conf and atual_conf not in lista_conf:
+            lista_conf.insert(1, atual_conf)
+        conferente = c2.selectbox("Conferente", lista_conf,
+                                  index=lista_conf.index(atual_conf)
+                                  if atual_conf in lista_conf else 0)
+
+        c1, c2 = st.columns(2)
+        opcoes = ["", "SIM", "NÃO"]
+        v_erro = str(oc["erro_separador"] or "")
+        erro_separador = c1.radio(
+            "Erro do separador?", opcoes, horizontal=True,
+            index=opcoes.index(v_erro) if v_erro in opcoes else 0)
+        v_bip = str(oc["bipado"] or "")
+        bipado = c2.radio("Bipado?", opcoes, horizontal=True,
+                          index=opcoes.index(v_bip) if v_bip in opcoes else 0)
+
+        parecer = st.text_area("Parecer da análise",
+                               value=str(oc["parecer"] or ""), height=90,
+                               placeholder="Conclusão, responsabilidade "
+                                           "apurada, ação tomada")
+
+        c1, c2, c3 = st.columns(3)
+        validar = c1.form_submit_button("Validar ocorrência", type="primary",
+                                        use_container_width=True)
+        recusar = c2.form_submit_button("Recusar", use_container_width=True)
+        salvar = c3.form_submit_button("Salvar sem concluir",
+                                       use_container_width=True)
+
+    if validar or recusar or salvar:
+        if (validar or recusar) and not parecer.strip():
+            st.error("Escreva o parecer antes de concluir a análise.")
+            return
+        novo_status = (STATUS_VALIDADA if validar
+                       else STATUS_RECUSADA if recusar else STATUS_PENDENTE)
+        campos = {"separador": separador, "conferente": conferente,
+                  "erro_separador": erro_separador, "bipado": bipado,
+                  "parecer": parecer.strip(), "status": novo_status}
+        if validar or recusar:
+            campos["responsavel_analise"] = usuario["nome"]
+            campos["validado_em"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        atualizar_ocorrencia(alvo, campos)
+        st.success(f"Ocorrência {alvo}: {novo_status.lower()}.")
+        st.rerun()
 
 
 # ==========================================================================
@@ -870,6 +1003,8 @@ def aplicar_filtros(df: pd.DataFrame, chave: str) -> pd.DataFrame:
                                  key=f"set_{chave}")
         mot = f2.multiselect("Motivo", sorted(df["motivo"].dropna().unique()),
                              key=f"mot_{chave}")
+        f5, f6 = st.columns(2)
+        sts = f5.multiselect("Status", STATUS_TODOS, key=f"sts_{chave}")
         f3, f4 = st.columns(2)
         ent = f3.multiselect("Entregador",
                              sorted(df["entregador"].dropna().unique()),
@@ -881,6 +1016,8 @@ def aplicar_filtros(df: pd.DataFrame, chave: str) -> pd.DataFrame:
     m = df["data"].notna()
     m &= df["data"].dt.date >= inicio
     m &= df["data"].dt.date <= fim
+    if sts:
+        m &= df["status"].isin(sts)
     if setores:
         m &= df["setor"].isin(setores)
     if mot:
@@ -924,10 +1061,11 @@ def pagina_consultar(usuario: dict):
     c2.metric("Valor financeiro", f"R$ {filtrado['valor_financeiro'].sum():,.2f}")
     c3.metric("Qtd. de itens", f"{filtrado['quantidade'].sum():,.0f}")
 
-    visiveis = ["id", "data", "nota_fiscal", "pedido", "cliente", "codigo",
-                "produto", "quantidade", "motivo", "setor", "entregador",
-                "separador", "conferente", "vendedor", "supervisor",
-                "responsavel_registro", "valor_financeiro", "obs"]
+    visiveis = ["id", "status", "data", "nota_fiscal", "pedido", "cliente",
+                "codigo", "produto", "quantidade", "motivo", "setor",
+                "entregador", "separador", "conferente", "vendedor",
+                "supervisor", "responsavel_registro", "responsavel_analise",
+                "valor_financeiro", "obs", "parecer"]
     st.dataframe(
         filtrado[visiveis].rename(columns=ROTULOS),
         use_container_width=True, hide_index=True,
@@ -946,34 +1084,9 @@ def pagina_consultar(usuario: dict):
                        file_name=f"ocorrencias_{date.today():%Y%m%d}.csv",
                        mime="text/csv", use_container_width=True)
 
-    if not pode_editar(usuario):
-        return
-
-    st.divider()
-    st.markdown("##### Analisar / editar ocorrência")
-    editaveis = filtrado[filtrado["id"].astype(str).str.startswith("OC")]
-    if editaveis.empty:
-        st.caption("Nenhuma ocorrência editável no filtro atual.")
-        return
-    alvo = st.selectbox(
-        "Ocorrência", editaveis["id"].tolist(),
-        format_func=lambda i: f"{i} · "
-        + str(editaveis.loc[editaveis['id'] == i, 'produto'].iloc[0])[:40])
-    linha = editaveis[editaveis["id"] == alvo].iloc[0]
-    with st.form("editar"):
-        c1, c2 = st.columns(2)
-        resp = c1.text_input("Responsável pela análise",
-                             value=str(linha["responsavel_analise"] or ""))
-        opcoes = ["", "SIM", "NÃO"]
-        atual = str(linha["erro_separador"] or "")
-        erro_sep = c2.radio("Erro do separador?", opcoes, horizontal=True,
-                            index=opcoes.index(atual) if atual in opcoes else 0)
-        obs = st.text_area("Observações", value=str(linha["obs"] or ""))
-        if st.form_submit_button("Salvar alterações", type="primary"):
-            atualizar_ocorrencia(alvo, {"responsavel_analise": resp.upper(),
-                                        "erro_separador": erro_sep, "obs": obs})
-            st.success("Ocorrência atualizada.")
-            st.rerun()
+    if pode_editar(usuario):
+        st.caption("Para conferir e validar ocorrências, use a página "
+                   "**Análise** na barra lateral.")
 
 
 # ==========================================================================
@@ -1017,7 +1130,8 @@ def pagina_painel(usuario: dict):
     c1.metric("Ocorrências", len(df))
     c2.metric("Valor financeiro", f"R$ {df['valor_financeiro'].sum():,.2f}")
     c3.metric("Notas fiscais", df["nota_fiscal"].nunique())
-    c4.metric("Motivo mais comum", df["motivo"].mode().iat[0] if len(df) else "-")
+    c4.metric("Pendentes de análise",
+              int((df["status"] == STATUS_PENDENTE).sum()))
 
     st.markdown("##### Evolução diária")
     serie = df.groupby(df["data"].dt.date).size().reset_index(name="qtd")
@@ -1311,8 +1425,17 @@ def main():
         st.divider()
         opcoes = ["Registrar", "Consultar", "Painel"]
         if pode_editar(usuario):
+            opcoes.insert(1, "Análise")
             opcoes += ["Bases", "Diagnóstico"]
         pagina = st.radio("Navegação", opcoes, label_visibility="collapsed")
+        if pode_editar(usuario):
+            try:
+                n = len(pendentes())
+                if n:
+                    st.warning(f"{n} ocorrência(s) aguardando análise",
+                               icon="📋")
+            except Exception:
+                pass
         st.divider()
         st.caption(f"Armazenamento: {nome_backend()}")
         if not usando_sheets():
@@ -1328,8 +1451,9 @@ def main():
     if pagina == "Diagnóstico":
         diagnostico()
     else:
-        {"Registrar": pagina_registrar, "Consultar": pagina_consultar,
-         "Painel": pagina_painel, "Bases": pagina_bases}[pagina](usuario)
+        {"Registrar": pagina_registrar, "Análise": pagina_analise,
+         "Consultar": pagina_consultar, "Painel": pagina_painel,
+         "Bases": pagina_bases}[pagina](usuario)
 
 
 if __name__ == "__main__":
